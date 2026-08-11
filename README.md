@@ -41,6 +41,7 @@ WEBHOOK_TOKEN=tu-wstaw-dlugi-losowy-ciag
 4. Otwórz dashboard i skopiuj adres webhooka z ustawień.
 
 Dane SQLite i automatycznie wygenerowany token pozostaną w wolumenie `awesome-habits-dashboard-data`.
+Przy starcie kontener automatycznie naprawia właściciela katalogu danych utworzonego przez Docker lub Portainera, a następnie uruchamia aplikację jako nieuprzywilejowany użytkownik `habits`.
 
 ## Import danych
 

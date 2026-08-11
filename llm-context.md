@@ -10,7 +10,7 @@ Awesome Habits Lens jest samodzielnym dashboardem dla pełnych eksportów CSV z 
 - `ThreadingHTTPServer` jako serwer HTTP,
 - SQLite z WAL,
 - frontend bez frameworka w `static/`,
-- kontener Alpine uruchamiany jako użytkownik bez uprawnień root.
+- kontener Alpine naprawiający przy starcie uprawnienia trwałego wolumenu, a następnie uruchamiający aplikację jako użytkownik bez uprawnień root.
 
 ## Przepływ importu
 
