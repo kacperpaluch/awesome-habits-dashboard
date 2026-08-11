@@ -28,6 +28,7 @@ services:
       TZ: Europe/Warsaw
       MAX_UPLOAD_MB: 20
       MAX_BACKUP_MB: 100
+      BACKUP_TIME: "03:00"
       BACKUP_KEEP: 14
       WEBHOOK_TOKEN: ""
     volumes:

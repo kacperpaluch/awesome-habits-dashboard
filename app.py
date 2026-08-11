@@ -53,6 +53,7 @@ WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN", "").strip()
 TOKEN_PATH = Path(os.getenv("WEBHOOK_TOKEN_FILE", str(DB_PATH.parent / "webhook-token")))
 BACKUP_DIR = Path(os.getenv("BACKUP_DIR", str(DB_PATH.parent / "backup")))
 BACKUP_KEEP = max(1, int(os.getenv("BACKUP_KEEP", "14")))
+BACKUP_TIME = os.getenv("BACKUP_TIME", "03:00").strip()
 IMPORT_LOCK = threading.Lock()
 DB_LOCK = threading.RLock()
 
@@ -182,6 +183,14 @@ def backup_filename(kind: str = "backup") -> str:
     return f"awesome-habits-{kind}-{stamp}.db"
 
 
+def backup_clock() -> tuple[int, int]:
+    try:
+        parsed = datetime.strptime(BACKUP_TIME, "%H:%M")
+    except ValueError as exc:
+        raise ImportError("BACKUP_TIME musi mieć format HH:MM, np. 03:00") from exc
+    return parsed.hour, parsed.minute
+
+
 def prune_backups() -> None:
     backups = sorted(BACKUP_DIR.glob("awesome-habits-*.db"), key=lambda p: p.stat().st_mtime)
     for old in backups[:-BACKUP_KEEP]:
@@ -228,7 +237,9 @@ def list_backups() -> list[dict]:
         result.append({
             "file": path.name, "size_kb": round(stat.st_size / 1024, 1),
             "modified": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds"),
-            "kind": "pre_restore" if "-pre-restore-" in path.name else "snapshot",
+            "kind": ("pre_restore" if "-pre-restore-" in path.name else
+                     "manual" if "-manual-" in path.name else
+                     "scheduled" if "-scheduled-" in path.name else "snapshot"),
         })
     return result
 
@@ -238,8 +249,28 @@ def backup_status() -> dict:
     latest = backups[0] if backups else None
     validation = validate_database(resolve_backup(latest["file"])) if latest else None
     return {"healthy": bool(latest and validation and validation["valid"]),
-            "keep": BACKUP_KEEP, "latest": latest, "latest_validation": validation,
+            "keep": BACKUP_KEEP, "backup_time": BACKUP_TIME,
+            "latest": latest, "latest_validation": validation,
             "backups": backups}
+
+
+def backup_if_due(now: datetime | None = None) -> Path | None:
+    with DB_LOCK:
+        now = now or datetime.now().astimezone()
+        hour, minute = backup_clock()
+        due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now < due:
+            return None
+        for item in list_backups():
+            if item["kind"] != "scheduled":
+                continue
+            modified = datetime.fromisoformat(item["modified"])
+            if modified.date() == now.date():
+                return None
+        with database() as conn:
+            if conn.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 0:
+                return None
+        return backup_database("scheduled")
 
 
 def restore_database(source_path: Path) -> dict:
@@ -357,7 +388,8 @@ def import_csv(payload: bytes, source: str, filename: str = "AwesomeHabits.csv")
         backup_name = None
         backup_error = None
         try:
-            backup_name = backup_database("snapshot").name
+            scheduled = backup_if_due()
+            backup_name = scheduled.name if scheduled else None
         except (ImportError, OSError, sqlite3.Error) as exc:
             backup_error = str(exc)
         return {
@@ -731,9 +763,25 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def backup_loop() -> None:
+    while True:
+        try:
+            created = backup_if_due()
+            if created:
+                print(f"Automatyczny backup: {created.name}", flush=True)
+        except Exception as exc:
+            print(f"Automatyczny backup nie powiódł się: {exc}", flush=True)
+        threading.Event().wait(60)
+
+
 def main() -> None:
     init_db()
     webhook_token()
+    try:
+        backup_if_due()
+    except Exception as exc:
+        print(f"Backup przy starcie nie powiódł się: {exc}", flush=True)
+    threading.Thread(target=backup_loop, name="scheduled-backup", daemon=True).start()
     print(f"Awesome Habits Lens: http://{HOST}:{PORT}", flush=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     try:

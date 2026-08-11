@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from contextlib import closing
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import app
@@ -22,15 +22,18 @@ class AwesomeHabitsTests(unittest.TestCase):
         self.old_db = app.DB_PATH
         self.old_token_path = app.TOKEN_PATH
         self.old_backup_dir = app.BACKUP_DIR
+        self.old_backup_time = app.BACKUP_TIME
         app.DB_PATH = Path(self.temp.name) / "test.db"
         app.TOKEN_PATH = Path(self.temp.name) / "token"
         app.BACKUP_DIR = Path(self.temp.name) / "backup"
+        app.BACKUP_TIME = "00:00"
         app.init_db()
 
     def tearDown(self):
         app.DB_PATH = self.old_db
         app.TOKEN_PATH = self.old_token_path
         app.BACKUP_DIR = self.old_backup_dir
+        app.BACKUP_TIME = self.old_backup_time
         self.temp.cleanup()
 
     def test_parse_and_import_snapshot(self):
@@ -102,6 +105,16 @@ class AwesomeHabitsTests(unittest.TestCase):
             dates = {row[0] for row in conn.execute("SELECT date FROM records WHERE name='Fiber'")}
         self.assertIn("2026-08-11", dates)
         self.assertNotIn("2026-08-12", dates)
+
+    def test_scheduled_backup_runs_once_after_configured_time(self):
+        app.BACKUP_TIME = "23:59"
+        app.import_csv(CSV, "test")
+        now = datetime.now().astimezone().replace(hour=12, minute=0, second=0, microsecond=0)
+        self.assertIsNone(app.backup_if_due(now))
+        app.BACKUP_TIME = "00:00"
+        first = app.backup_if_due(now)
+        self.assertIsNotNone(first)
+        self.assertIsNone(app.backup_if_due(now))
 
     def test_restore_rejects_foreign_file_without_changing_data(self):
         app.import_csv(CSV, "test")

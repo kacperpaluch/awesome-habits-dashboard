@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#f3f1ec">
   <title>Awesome Habits Lens</title>
   <meta name="description" content="Prywatny dashboard statystyk z eksportów Awesome Habits.">
-  <link rel="stylesheet" href="/styles.css?v=1">
+  <link rel="stylesheet" href="/styles.css?v=3">
 </head>
 <body>
   <div class="shell">
@@ -90,7 +90,7 @@
     <div class="webhook"><label>Adres webhooka</label><div class="copy-field"><code id="webhookUrl">—</code><button id="copyWebhook">Kopiuj</button></div><p>Wyślij surowy plik CSV jako body żądania POST albo użyj multipart z polem <code>file</code>. Traktuj adres jak hasło.</p></div>
     <div id="latestImport" class="latest-import"></div>
     <section class="backup-section">
-      <div><p class="eyebrow">BEZPIECZEŃSTWO</p><h3>Backup i przywracanie</h3><p>Każdy udany import automatycznie tworzy zweryfikowany snapshot SQLite. Przed przywróceniem aplikacja zapisze dodatkową kopię bezpieczeństwa.</p></div>
+      <div><p class="eyebrow">BEZPIECZEŃSTWO</p><h3>Backup i przywracanie</h3><p>Aplikacja raz dziennie o skonfigurowanej godzinie tworzy zweryfikowany snapshot SQLite. Przed przywróceniem zapisze dodatkową kopię bezpieczeństwa.</p></div>
       <div class="backup-actions"><button id="backupNow" class="button" type="button">Utwórz backup</button><button id="restoreUpload" class="button" type="button">Przywróć z pliku .db</button></div>
       <input id="backupFileInput" type="file" accept=".db,application/vnd.sqlite3" hidden>
       <div id="backupStatus" class="backup-status"></div>
@@ -99,6 +99,6 @@
   </dialog>
   <dialog id="detailDialog" class="dialog detail-dialog"><button class="dialog-close" data-close="detailDialog" aria-label="Zamknij">×</button><div id="detailContent"></div></dialog>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js?v=1"></script>
+  <script src="/app.js?v=3"></script>
 </body>
 </html>

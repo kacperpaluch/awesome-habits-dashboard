@@ -56,7 +56,7 @@ async function loadConfig() {
 async function loadBackups() {
   const status = await api("/api/backups");
   const latest = status.latest;
-  $("#backupStatus").innerHTML = latest ? `<strong>${status.healthy ? "Backup sprawdzony" : "Backup wymaga uwagi"}</strong><small>${escapeHtml(latest.file)} · ${latest.size_kb} KB · retencja ${status.keep} kopii</small>` : `<strong>Brak backupu</strong><small>Pierwszy powstanie automatycznie po imporcie.</small>`;
+  $("#backupStatus").innerHTML = latest ? `<strong>${status.healthy ? "Backup sprawdzony" : "Backup wymaga uwagi"}</strong><small>${escapeHtml(latest.file)} · ${latest.size_kb} KB · codziennie ${escapeHtml(status.backup_time)} · retencja ${status.keep} kopii</small>` : `<strong>Brak backupu</strong><small>Pierwszy powstanie po ${escapeHtml(status.backup_time)}, gdy baza będzie zawierała dane.</small>`;
   $("#backupList").innerHTML = status.backups.length ? status.backups.map((item) => `<div class="backup-row"><div><strong>${item.kind === "pre_restore" ? "Kopia przed przywróceniem" : "Snapshot danych"}</strong><small>${new Date(item.modified).toLocaleString("pl-PL")} · ${item.size_kb} KB</small></div><div><a href="/api/backups/${encodeURIComponent(item.file)}/download">Pobierz</a><button data-restore="${escapeHtml(item.file)}">Przywróć</button></div></div>`).join("") : "";
   $$('[data-restore]').forEach((button) => button.addEventListener("click", () => restoreServerBackup(button.dataset.restore)));
 }

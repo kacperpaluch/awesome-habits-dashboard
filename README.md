@@ -12,7 +12,7 @@ Self-hostowany dashboard analityczny dla eksportów CSV z aplikacji Awesome Habi
 - nawyki dzienne i tygodniowe, Building i Breaking,
 - trzy stany okresu: wykonane, niewykonane i „w trakcie” dla bieżącego dnia/tygodnia,
 - skuteczność bez zaniżania wyniku przez trwające okresy, streaki, idealne dni, trend 7/30 oraz heatmapa,
-- automatyczny backup po każdym imporcie, backup na żądanie i bezpieczne przywracanie,
+- automatyczny backup o wybranej godzinie, backup na żądanie i bezpieczne przywracanie,
 - filtrowanie według nawyku, listy, okresu i zakresu dat,
 - responsywny interfejs oraz szczegóły każdego nawyku,
 - lokalna baza SQLite w trwałym wolumenie,
@@ -38,7 +38,7 @@ WEBHOOK_TOKEN=tu-wstaw-dlugi-losowy-ciag
 ### Portainer
 
 1. Utwórz Stack i wklej `docker-compose.yml`.
-2. Opcjonalnie ustaw `APP_PORT`, `WEBHOOK_TOKEN`, `MAX_UPLOAD_MB` i `TZ`.
+2. Opcjonalnie ustaw `APP_PORT`, `WEBHOOK_TOKEN`, `MAX_UPLOAD_MB`, `BACKUP_TIME` i `TZ`.
 3. Wdróż Stack.
 4. Otwórz dashboard i skopiuj adres webhooka z ustawień.
 
@@ -47,7 +47,7 @@ Przy starcie kontener automatycznie naprawia właściciela katalogu danych utwor
 
 ### Backup i przywracanie
 
-Każdy udany import CSV tworzy zweryfikowany snapshot SQLite w podkatalogu `backup` tego samego wolumenu. W ustawieniach aplikacji można również:
+Aplikacja tworzy raz dziennie zweryfikowany snapshot SQLite w podkatalogu `backup` tego samego wolumenu. Godzinę ustawia `BACKUP_TIME` w formacie `HH:MM` (domyślnie `03:00`), według strefy `TZ`. Backup powstaje przy pierwszym sprawdzeniu po tej godzinie, o ile baza zawiera dane. W ustawieniach aplikacji można również:
 
 - utworzyć backup na żądanie,
 - pobrać wybraną kopię `.db`,
@@ -56,7 +56,7 @@ Każdy udany import CSV tworzy zweryfikowany snapshot SQLite w podkatalogu `back
 
 Przed każdym przywróceniem aplikacja automatycznie tworzy kopię `pre-restore`. Backup jest akceptowany dopiero po sprawdzeniu nagłówka SQLite, `PRAGMA integrity_check`, wymaganych tabel i sumy SHA-256. Przywrócenie wymaga wpisania `PRZYWRÓĆ`.
 
-Domyślnie zachowywanych jest 14 najnowszych kopii. Zmienisz to przez `BACKUP_KEEP`; limit przesyłanego backupu ustawia `MAX_BACKUP_MB`.
+Domyślnie zachowywanych jest 14 najnowszych kopii. Zmienisz to przez `BACKUP_KEEP`; limit przesyłanego backupu ustawia `MAX_BACKUP_MB`. Kopie w wolumenie chronią przed błędnym importem lub przywróceniem, ale dla ochrony przed utratą hosta warto regularnie pobierać plik `.db` poza serwer.
 
 ## Import danych
 
