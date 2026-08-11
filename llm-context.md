@@ -19,12 +19,15 @@ Awesome Habits Lens jest samodzielnym dashboardem dla pełnych eksportów CSV z 
 3. Cały plik jest walidowany przed otwarciem transakcji.
 4. W transakcji zapisywany jest wpis `imports`, usuwany poprzedni snapshot i wstawiane nowe rekordy.
 5. Dashboard czyta tylko najnowszy snapshot z `records`.
+6. Po udanym imporcie powstaje zweryfikowany backup SQLite z retencją `BACKUP_KEEP`.
 
 Token webhooka pochodzi z `WEBHOOK_TOKEN`. Gdy zmienna jest pusta, powstaje losowy token `secrets.token_urlsafe(24)` zapisany w `WEBHOOK_TOKEN_FILE` (domyślnie obok bazy w wolumenie). Ścieżki webhooków są redagowane w logach HTTP.
 
 ## Semantyka danych
 
-Pole `Status` z eksportu jest źródłem informacji o wykonaniu. `Type`, `Goal` i `Quantity` służą do prezentowania postępu i rekordów. Rekordy `Daily` budują heatmapę i idealne dni; `Weekly` mają osobne streaki z krokiem tygodniowym.
+Pole `Status` z eksportu jest źródłem informacji o wykonaniu, ale niezakończony rekord z bieżącego dnia lub tygodnia otrzymuje stan `in_progress`. Nie obniża skuteczności ani trendu, dopóki jego okres się nie zakończy. `Type`, `Goal` i `Quantity` służą do prezentowania postępu i rekordów. Rekordy `Daily` budują heatmapę i idealne dni; `Weekly` mają osobne streaki z krokiem tygodniowym.
+
+Backup używa online backup API SQLite, sprawdza integralność, schemat i SHA-256. Restore zawsze tworzy `awesome-habits-pre-restore-…db`, zanim zastąpi aktywną bazę. Backupy znajdują się domyślnie w `/app/data/backup`, więc pozostają w named volume.
 
 ## Weryfikacja
 

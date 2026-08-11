@@ -48,9 +48,13 @@ DB_PATH = Path(os.getenv("DB_PATH", str(BASE_DIR / "data" / "habits.db")))
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
 MAX_UPLOAD_BYTES = max(1024, int(os.getenv("MAX_UPLOAD_MB", "20")) * 1024 * 1024)
+MAX_BACKUP_BYTES = max(1024, int(os.getenv("MAX_BACKUP_MB", "100")) * 1024 * 1024)
 WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN", "").strip()
 TOKEN_PATH = Path(os.getenv("WEBHOOK_TOKEN_FILE", str(DB_PATH.parent / "webhook-token")))
+BACKUP_DIR = Path(os.getenv("BACKUP_DIR", str(DB_PATH.parent / "backup")))
+BACKUP_KEEP = max(1, int(os.getenv("BACKUP_KEEP", "14")))
 IMPORT_LOCK = threading.Lock()
+DB_LOCK = threading.RLock()
 
 REQUIRED_COLUMNS = {"Date", "Name", "Period", "Type", "Goal", "Quantity", "Status"}
 ALLOWED_PERIODS = {"Daily", "Weekly"}
@@ -89,12 +93,13 @@ def connect() -> sqlite3.Connection:
 
 @contextmanager
 def database():
-    conn = connect()
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    with DB_LOCK:
+        conn = connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def init_db() -> None:
@@ -133,6 +138,131 @@ def init_db() -> None:
             PRAGMA user_version=1;
             """
         )
+
+
+def validate_database(path: Path) -> dict:
+    """Validate an Awesome Habits Lens SQLite backup before it is trusted."""
+    try:
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValueError("Plik nie istnieje lub jest pusty")
+        with path.open("rb") as handle:
+            if handle.read(16) != b"SQLite format 3\x00":
+                raise ValueError("Plik nie jest bazą SQLite")
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            if integrity != "ok":
+                raise ValueError(f"integrity_check: {integrity}")
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+            missing = sorted({"imports", "records"} - tables)
+            if missing:
+                raise ValueError("Brak tabel Awesome Habits Lens: " + ", ".join(missing))
+            counts = {
+                "imports": conn.execute("SELECT COUNT(*) FROM imports").fetchone()[0],
+                "records": conn.execute("SELECT COUNT(*) FROM records").fetchone()[0],
+            }
+        finally:
+            conn.close()
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return {"valid": True, "error": None, "integrity": "ok", "counts": counts,
+                "size_kb": round(path.stat().st_size / 1024, 1), "sha256": digest.hexdigest()}
+    except (OSError, sqlite3.DatabaseError, ValueError) as exc:
+        return {"valid": False, "error": str(exc), "integrity": None, "counts": None,
+                "size_kb": round(path.stat().st_size / 1024, 1) if path.exists() else 0,
+                "sha256": None}
+
+
+def backup_filename(kind: str = "backup") -> str:
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
+    return f"awesome-habits-{kind}-{stamp}.db"
+
+
+def prune_backups() -> None:
+    backups = sorted(BACKUP_DIR.glob("awesome-habits-*.db"), key=lambda p: p.stat().st_mtime)
+    for old in backups[:-BACKUP_KEEP]:
+        old.unlink(missing_ok=True)
+
+
+def backup_database(kind: str = "backup", *, prune: bool = True) -> Path:
+    """Create and verify a consistent online SQLite backup."""
+    with DB_LOCK:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        target = BACKUP_DIR / backup_filename(kind)
+        source = connect()
+        destination = sqlite3.connect(target)
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+            source.close()
+        validation = validate_database(target)
+        if not validation["valid"]:
+            target.unlink(missing_ok=True)
+            raise ImportError(f"Backup nie przeszedł kontroli: {validation['error']}")
+        if prune:
+            prune_backups()
+        return target
+
+
+def resolve_backup(filename: str) -> Path:
+    if (not filename or Path(filename).name != filename
+            or not filename.startswith("awesome-habits-") or not filename.endswith(".db")):
+        raise ImportError("Nieprawidłowa nazwa backupu")
+    path = BACKUP_DIR / filename
+    if not path.is_file():
+        raise ImportError("Nie znaleziono backupu")
+    return path
+
+
+def list_backups() -> list[dict]:
+    if not BACKUP_DIR.is_dir():
+        return []
+    result = []
+    for path in sorted(BACKUP_DIR.glob("awesome-habits-*.db"), key=lambda p: p.stat().st_mtime, reverse=True):
+        stat = path.stat()
+        result.append({
+            "file": path.name, "size_kb": round(stat.st_size / 1024, 1),
+            "modified": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds"),
+            "kind": "pre_restore" if "-pre-restore-" in path.name else "snapshot",
+        })
+    return result
+
+
+def backup_status() -> dict:
+    backups = list_backups()
+    latest = backups[0] if backups else None
+    validation = validate_database(resolve_backup(latest["file"])) if latest else None
+    return {"healthy": bool(latest and validation and validation["valid"]),
+            "keep": BACKUP_KEEP, "latest": latest, "latest_validation": validation,
+            "backups": backups}
+
+
+def restore_database(source_path: Path) -> dict:
+    """Validate, safety-backup, and restore the active database."""
+    with DB_LOCK:
+        validation = validate_database(source_path)
+        if not validation["valid"]:
+            raise ImportError(f"Nie można przywrócić backupu: {validation['error']}")
+        safety = backup_database("pre-restore", prune=False)
+        source = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
+        destination = connect()
+        try:
+            source.backup(destination)
+            destination.commit()
+        finally:
+            destination.close()
+            source.close()
+        restored = validate_database(DB_PATH)
+        if not restored["valid"]:
+            raise ImportError(f"Przywrócona baza nie przeszła kontroli: {restored['error']}")
+        prune_backups()
+        return {"ok": True, "restored_from": source_path.name,
+                "safety_backup": safety.name, "validation": restored}
 
 
 def text_value(row: dict[str, str], key: str) -> str:
@@ -224,11 +354,18 @@ def import_csv(payload: bytes, source: str, filename: str = "AwesomeHabits.csv")
                 :unit,:status,:list_name,:note,:import_id)""",
                 [{**row, "import_id": import_id} for row in rows],
             )
+        backup_name = None
+        backup_error = None
+        try:
+            backup_name = backup_database("snapshot").name
+        except (ImportError, OSError, sqlite3.Error) as exc:
+            backup_error = str(exc)
         return {
             "ok": True, "import_id": import_id, "rows": len(rows),
             "habits": len({r["name"] for r in rows}), "min_date": min(r["date"] for r in rows),
             "max_date": max(r["date"] for r in rows),
             "unchanged": bool(previous and previous["sha256"] == digest),
+            "backup": backup_name, "backup_error": backup_error,
         }
     finally:
         IMPORT_LOCK.release()
@@ -240,6 +377,14 @@ def is_complete(row: dict | sqlite3.Row) -> bool:
 
 def period_key(day: date, period: str) -> date:
     return day - timedelta(days=day.weekday()) if period.lower() == "weekly" else day
+
+
+def record_state(row: dict | sqlite3.Row, today: date) -> str:
+    """Return a final or provisional state for a daily/weekly record."""
+    if is_complete(row):
+        return "complete"
+    current_period = period_key(today, row["period"]).isoformat()
+    return "in_progress" if row["date"] == current_period else "missed"
 
 
 def streaks(rows: list[dict], today: date) -> tuple[int, int, str]:
@@ -285,8 +430,10 @@ def query_records(params: dict[str, list[str]], include_archived: bool = False) 
         return [dict(row) for row in conn.execute("SELECT * FROM records" + where + " ORDER BY date,name", args)]
 
 
-def rate_of(rows: list[dict]) -> float | None:
-    return round(sum(is_complete(r) for r in rows) / len(rows) * 100, 1) if rows else None
+def rate_of(rows: list[dict], today: date | None = None) -> float | None:
+    today = today or date.today()
+    resolved = [row for row in rows if record_state(row, today) != "in_progress"]
+    return round(sum(is_complete(r) for r in resolved) / len(resolved) * 100, 1) if resolved else None
 
 
 def streak_rows(all_rows: list[dict], name: str, period: str) -> list[dict]:
@@ -307,29 +454,40 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
         history = streak_rows(all_rows, name, period)
         current, longest, unit = streaks(history, today)
         done = sum(is_complete(r) for r in items)
+        in_progress = sum(record_state(r, today) == "in_progress" for r in items)
+        missed = sum(record_state(r, today) == "missed" for r in items)
         quantities = [r["quantity"] for r in items]
         habits.append({
             "name": name, "period": period, "type": items[-1]["habit_type"],
             "unit": items[-1]["unit"], "goal": items[-1]["goal"], "list": items[-1]["list_name"],
-            "done": done, "missed": len(items) - done, "rate": round(done / len(items) * 100, 1),
+            "done": done, "missed": missed, "in_progress": in_progress,
+            "rate": rate_of(items, today),
             "current_streak": current, "longest_streak": longest, "streak_unit": unit,
             "average": round(statistics.fmean(quantities), 2), "latest": quantities[-1],
         })
-    habits.sort(key=lambda h: (-h["rate"], h["name"].lower()))
-    total = len(rows)
+    habits.sort(key=lambda h: (h["rate"] is None, -(h["rate"] or 0), h["name"].lower()))
     done = sum(is_complete(r) for r in rows)
-    heatmap = [{"date": key, "done": sum(is_complete(r) for r in items), "total": len(items),
+    missed = sum(record_state(r, today) == "missed" for r in rows)
+    in_progress = sum(record_state(r, today) == "in_progress" for r in rows)
+    total = len(rows)
+    heatmap = [{"date": key, "done": sum(is_complete(r) for r in items),
+                "missed": sum(record_state(r, today) == "missed" for r in items),
+                "in_progress": sum(record_state(r, today) == "in_progress" for r in items),
+                "total": len(items),
                 "rate": round(sum(is_complete(r) for r in items) / len(items) * 100)}
                for key, items in sorted(days.items())]
     day_rates = []
     for item in heatmap:
+        if item["in_progress"]:
+            continue
         day_rates.append(item["rate"])
         item["avg7"] = round(statistics.fmean(day_rates[-7:]), 1)
         item["avg30"] = round(statistics.fmean(day_rates[-30:]), 1)
+    trend = [item for item in heatmap if not item["in_progress"]]
     weekday_stats = []
     for weekday in range(7):
         items = [r for r in rows if r["period"] == "Daily" and date.fromisoformat(r["date"]).weekday() == weekday]
-        weekday_stats.append({"day": weekday, "rate": rate_of(items), "records": len(items)})
+        weekday_stats.append({"day": weekday, "rate": rate_of(items, today), "records": len(items)})
     month_groups = defaultdict(list)
     for row in rows:
         if row["period"] == "Daily":
@@ -339,8 +497,11 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
         month_days = defaultdict(list)
         for item in items:
             month_days[item["date"]].append(item)
-        monthly.append({"month": month, "rate": rate_of(items), "records": len(items),
-                        "perfect_days": sum(all(is_complete(r) for r in group) for group in month_days.values())})
+        monthly.append({"month": month, "rate": rate_of(items, today), "records": len(items),
+                        "perfect_days": sum(
+                            all(record_state(r, today) == "complete" for r in group)
+                            for group in month_days.values()
+                        )})
     current_period = {}
     for row in all_rows:
         key = period_key(today, row["period"]).isoformat()
@@ -352,7 +513,8 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
             today_done += 1
         else:
             current, _, unit = streaks(streak_rows(all_rows, name, period), today)
-            pending.append({"name": name, "period": period, "streak": current, "unit": unit,
+            pending.append({"name": name, "period": period, "type": row["habit_type"],
+                            "streak": current, "unit": unit,
                             "quantity": row["quantity"], "goal": row["goal"], "value_unit": row["unit"]})
     with database() as conn:
         bounds = conn.execute("SELECT MIN(date) min_date,MAX(date) max_date FROM records WHERE archived=0").fetchone()
@@ -363,17 +525,23 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
         if row["period"] == "Daily":
             key = period_key(date.fromisoformat(row["date"]), "Weekly").isoformat()
             week_groups[key].append(row)
-    week_rates = [rate_of(items) for items in week_groups.values()]
+    current_week = period_key(today, "Weekly").isoformat()
+    week_rates = [rate_of(items, today) for key, items in week_groups.items() if key != current_week]
+    week_rates = [value for value in week_rates if value is not None]
     return {
-        "summary": {"done": done, "missed": total - done, "records": total,
-                    "rate": round(done / total * 100, 1) if total else 0,
-                    "perfect_days": sum(bool(items) and all(is_complete(r) for r in items) for items in days.values())},
+        "summary": {"done": done, "missed": missed, "in_progress": in_progress,
+                    "records": total, "resolved": done + missed,
+                    "rate": round(done / (done + missed) * 100, 1) if done + missed else None,
+                    "perfect_days": sum(
+                        bool(items) and all(record_state(r, today) == "complete" for r in items)
+                        for items in days.values()
+                    )},
         "habits": habits, "heatmap": heatmap,
         "bounds": dict(bounds) if bounds else {"min_date": None, "max_date": None},
         "options": {"habits": sorted({r["name"] for r in options}),
                     "lists": sorted({r["list_name"] for r in options if r["list_name"]}),
                     "periods": sorted({r["period"] for r in options})},
-        "analytics": {"trends": {"daily": heatmap}, "weekdays": weekday_stats, "monthly": monthly,
+        "analytics": {"trends": {"daily": trend}, "weekdays": weekday_stats, "monthly": monthly,
                       "regularity": {"weekly_stddev": round(statistics.pstdev(week_rates), 1) if len(week_rates) > 1 else None,
                                      "weeks": len(week_rates)},
                       "today": {"date": today.isoformat(), "done": today_done, "total": len(current_period),
@@ -382,7 +550,8 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
     }
 
 
-def habit_detail(name: str, params: dict[str, list[str]]) -> dict | None:
+def habit_detail(name: str, params: dict[str, list[str]], today: date | None = None) -> dict | None:
+    today = today or date.today()
     selected = dict(params)
     selected["habit"] = [name]
     rows = query_records(selected)
@@ -394,16 +563,19 @@ def habit_detail(name: str, params: dict[str, list[str]]) -> dict | None:
     history = [r for r in all_rows if r["period"] == period]
     if not history:
         return None
-    current, longest, unit = streaks(history, date.today())
+    current, longest, unit = streaks(history, today)
     values = [r["quantity"] for r in rows]
+    in_progress = sum(record_state(r, today) == "in_progress" for r in rows)
     return {"name": name, "period": period, "type": history[-1]["habit_type"],
             "goal": history[-1]["goal"], "unit": history[-1]["unit"], "list": history[-1]["list_name"],
             "current_streak": current, "longest_streak": longest, "streak_unit": unit,
-            "done": sum(is_complete(r) for r in rows), "missed": sum(not is_complete(r) for r in rows),
-            "rate": rate_of(rows) or 0, "average": round(statistics.fmean(values), 2) if values else 0,
+            "done": sum(is_complete(r) for r in rows),
+            "missed": sum(record_state(r, today) == "missed" for r in rows),
+            "in_progress": in_progress, "rate": rate_of(rows, today),
+            "average": round(statistics.fmean(values), 2) if values else 0,
             "minimum": min(values) if values else 0, "maximum": max(values) if values else 0,
-            "records": [{"date": r["date"], "quantity": r["quantity"], "complete": is_complete(r),
-                         "status": r["status"]} for r in rows]}
+            "records": [{"date": r["date"], "quantity": r["quantity"],
+                         "state": record_state(r, today), "status": r["status"]} for r in rows]}
 
 
 def extract_multipart(body: bytes, content_type: str) -> tuple[bytes, str]:
@@ -444,15 +616,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def read_body(self) -> bytes:
+    def file_response(self, path: Path) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.sqlite3")
+        self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+        self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                self.wfile.write(chunk)
+
+    def read_body(self, limit: int = MAX_UPLOAD_BYTES + 65536) -> bytes:
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
             raise ImportError("Nieprawidłowy Content-Length") from exc
         if length <= 0:
             raise ImportError("Brak pliku w żądaniu")
-        if length > MAX_UPLOAD_BYTES + 65536:
-            raise ImportError(f"Żądanie przekracza limit {MAX_UPLOAD_BYTES // 1024 // 1024} MB")
+        if length > limit:
+            raise ImportError(f"Żądanie przekracza limit {limit // 1024 // 1024} MB")
         return self.rfile.read(length)
 
     def do_GET(self) -> None:
@@ -471,21 +654,56 @@ class Handler(BaseHTTPRequestHandler):
                                            "latest_import": dict(latest) if latest else None})
             if parsed.path == "/api/dashboard":
                 return self.json_response(dashboard(params))
+            if parsed.path == "/api/backups":
+                return self.json_response(backup_status())
+            if parsed.path.startswith("/api/backups/") and parsed.path.endswith("/download"):
+                filename = unquote(parsed.path.removeprefix("/api/backups/").removesuffix("/download"))
+                return self.file_response(resolve_backup(filename))
             if parsed.path.startswith("/api/habits/"):
                 detail = habit_detail(unquote(parsed.path.removeprefix("/api/habits/")), params)
                 return self.json_response(detail or {"error": "Nie znaleziono nawyku"}, 200 if detail else 404)
             return self.serve_static(parsed.path)
-        except (ValueError, sqlite3.Error) as exc:
+        except (ImportError, ValueError, sqlite3.Error) as exc:
             return self.json_response({"error": str(exc)}, 400)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
         is_ui = parsed.path == "/api/import"
         is_hook = parsed.path.startswith("/webhook/") and hmac.compare_digest(
             unquote(parsed.path.removeprefix("/webhook/")), webhook_token())
-        if not is_ui and not is_hook:
-            return self.json_response({"error": "Nie znaleziono endpointu"}, 404)
         try:
+            if parsed.path == "/api/backup":
+                path = backup_database("manual")
+                return self.json_response({"ok": True, "backup": path.name,
+                                           "validation": validate_database(path)}, HTTPStatus.CREATED)
+            if parsed.path.startswith("/api/backups/") and parsed.path.endswith("/restore"):
+                filename = unquote(parsed.path.removeprefix("/api/backups/").removesuffix("/restore"))
+                payload = json.loads(self.read_body().decode("utf-8"))
+                if payload.get("confirmation") != "PRZYWRÓĆ":
+                    raise ImportError("Wymagane potwierdzenie PRZYWRÓĆ")
+                return self.json_response(restore_database(resolve_backup(filename)))
+            if parsed.path == "/api/backups/restore-upload":
+                if params.get("confirmation", [""])[0] != "PRZYWRÓĆ":
+                    raise ImportError("Wymagane potwierdzenie PRZYWRÓĆ")
+                body = self.read_body(MAX_BACKUP_BYTES + 65536)
+                content_type = self.headers.get("Content-Type", "")
+                if not content_type.startswith("multipart/form-data"):
+                    raise ImportError("Backup należy wysłać jako multipart/form-data")
+                payload, filename = extract_multipart(body, content_type)
+                if len(payload) > MAX_BACKUP_BYTES:
+                    raise ImportError(f"Backup przekracza limit {MAX_BACKUP_BYTES // 1024 // 1024} MB")
+                BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+                temporary = BACKUP_DIR / (".restore-upload-" + secrets.token_hex(8) + ".db")
+                try:
+                    temporary.write_bytes(payload)
+                    result = restore_database(temporary)
+                    result["restored_from"] = Path(filename).name
+                    return self.json_response(result)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            if not is_ui and not is_hook:
+                return self.json_response({"error": "Nie znaleziono endpointu"}, 404)
             body = self.read_body()
             content_type = self.headers.get("Content-Type", "")
             if content_type.startswith("multipart/form-data"):
@@ -494,9 +712,9 @@ class Handler(BaseHTTPRequestHandler):
                 payload, filename = body, self.headers.get("X-Filename", "AwesomeHabits.csv")
             result = import_csv(payload, "interfejs" if is_ui else "webhook", Path(filename).name)
             return self.json_response(result, HTTPStatus.CREATED)
-        except ImportError as exc:
+        except (ImportError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             return self.json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-        except sqlite3.Error as exc:
+        except (OSError, sqlite3.Error) as exc:
             return self.json_response({"error": f"Błąd bazy danych: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def serve_static(self, path: str) -> None:

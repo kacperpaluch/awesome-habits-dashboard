@@ -7,6 +7,8 @@ Prywatny, self-hostowany dashboard analityczny dla eksportów CSV z Awesome Habi
 - ręczny import CSV z przeglądarki,
 - prywatny webhook do automatycznego przesyłania eksportów,
 - skuteczność, streaki, trendy 7/30, heatmapa i idealne dni,
+- bieżące dni i tygodnie oznaczane jako „w trakcie” bez zaniżania skuteczności,
+- automatyczne, zweryfikowane backupy SQLite oraz bezpieczne przywracanie,
 - obsługa nawyków dziennych, tygodniowych, Building i Breaking,
 - filtry zakresów czasu, nawyków, list oraz okresów,
 - lokalny zapis w SQLite i trwały named volume,
@@ -25,6 +27,8 @@ services:
     environment:
       TZ: Europe/Warsaw
       MAX_UPLOAD_MB: 20
+      MAX_BACKUP_MB: 100
+      BACKUP_KEEP: 14
       WEBHOOK_TOKEN: ""
     volumes:
       - awesome-habits-dashboard-data:/app/data

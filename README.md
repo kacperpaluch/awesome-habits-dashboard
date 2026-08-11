@@ -10,7 +10,9 @@ Self-hostowany dashboard analityczny dla eksportów CSV z aplikacji Awesome Habi
 - prywatny webhook do automatyzacji importu,
 - atomowa podmiana danych — błędny plik nie niszczy poprzedniego snapshotu,
 - nawyki dzienne i tygodniowe, Building i Breaking,
-- skuteczność, streaki, idealne dni, trend 7/30 oraz heatmapa,
+- trzy stany okresu: wykonane, niewykonane i „w trakcie” dla bieżącego dnia/tygodnia,
+- skuteczność bez zaniżania wyniku przez trwające okresy, streaki, idealne dni, trend 7/30 oraz heatmapa,
+- automatyczny backup po każdym imporcie, backup na żądanie i bezpieczne przywracanie,
 - filtrowanie według nawyku, listy, okresu i zakresu dat,
 - responsywny interfejs oraz szczegóły każdego nawyku,
 - lokalna baza SQLite w trwałym wolumenie,
@@ -42,6 +44,19 @@ WEBHOOK_TOKEN=tu-wstaw-dlugi-losowy-ciag
 
 Dane SQLite i automatycznie wygenerowany token pozostaną w wolumenie `awesome-habits-dashboard-data`.
 Przy starcie kontener automatycznie naprawia właściciela katalogu danych utworzonego przez Docker lub Portainera, a następnie uruchamia aplikację jako nieuprzywilejowany użytkownik `habits`.
+
+### Backup i przywracanie
+
+Każdy udany import CSV tworzy zweryfikowany snapshot SQLite w podkatalogu `backup` tego samego wolumenu. W ustawieniach aplikacji można również:
+
+- utworzyć backup na żądanie,
+- pobrać wybraną kopię `.db`,
+- przywrócić kopię serwerową,
+- przywrócić bazę z przesłanego pliku `.db`.
+
+Przed każdym przywróceniem aplikacja automatycznie tworzy kopię `pre-restore`. Backup jest akceptowany dopiero po sprawdzeniu nagłówka SQLite, `PRAGMA integrity_check`, wymaganych tabel i sumy SHA-256. Przywrócenie wymaga wpisania `PRZYWRÓĆ`.
+
+Domyślnie zachowywanych jest 14 najnowszych kopii. Zmienisz to przez `BACKUP_KEEP`; limit przesyłanego backupu ustawia `MAX_BACKUP_MB`.
 
 ## Import danych
 
@@ -96,6 +111,11 @@ Aplikacja utworzy bazę w `data/habits.db`.
 | `GET` | `/api/habits/{name}` | Szczegóły nawyku |
 | `POST` | `/api/import` | Import multipart z interfejsu |
 | `POST` | `/webhook/{token}` | Import surowego CSV lub multipart |
+| `GET` | `/api/backups` | Status i lista zweryfikowanych kopii |
+| `POST` | `/api/backup` | Utworzenie backupu na żądanie |
+| `GET` | `/api/backups/{file}/download` | Pobranie wybranej kopii |
+| `POST` | `/api/backups/{file}/restore` | Przywrócenie kopii serwerowej |
+| `POST` | `/api/backups/restore-upload` | Przywrócenie przesłanej bazy |
 
 ## Testy
 
