@@ -1,0 +1,108 @@
+# Awesome Habits Lens
+
+[![Docker Hub](https://img.shields.io/docker/pulls/kpa90/awesome-habits-dashboard?logo=docker)](https://hub.docker.com/r/kpa90/awesome-habits-dashboard)
+
+Self-hostowany dashboard analityczny dla eksportów CSV z aplikacji Awesome Habits. Nie wymaga API ani zewnętrznej bazy danych — plik można załadować w interfejsie albo automatycznie wysłać na prywatny webhook.
+
+## Funkcje
+
+- import eksportu `AwesomeHabits.csv` metodą drag & drop,
+- prywatny webhook do automatyzacji importu,
+- atomowa podmiana danych — błędny plik nie niszczy poprzedniego snapshotu,
+- nawyki dzienne i tygodniowe, Building i Breaking,
+- skuteczność, streaki, idealne dni, trend 7/30 oraz heatmapa,
+- filtrowanie według nawyku, listy, okresu i zakresu dat,
+- responsywny interfejs oraz szczegóły każdego nawyku,
+- lokalna baza SQLite w trwałym wolumenie,
+- brak zależności runtime poza biblioteką standardową Pythona.
+
+## Uruchomienie
+
+Obraz jest dostępny na [Docker Hub](https://hub.docker.com/r/kpa90/awesome-habits-dashboard) dla `linux/amd64` i `linux/arm64`.
+
+```bash
+cp .env.example .env
+docker compose up -d
+```
+
+Dashboard będzie dostępny pod adresem <http://localhost:8080>.
+
+Jeśli `WEBHOOK_TOKEN` pozostanie pusty, aplikacja przy pierwszym uruchomieniu wygeneruje losowy token i zachowa go w named volume. Pełny URL webhooka znajdziesz w ustawieniach dashboardu. Możesz również jawnie ustawić stały, długi token w `.env`:
+
+```env
+WEBHOOK_TOKEN=tu-wstaw-dlugi-losowy-ciag
+```
+
+### Portainer
+
+1. Utwórz Stack i wklej `docker-compose.yml`.
+2. Opcjonalnie ustaw `APP_PORT`, `WEBHOOK_TOKEN`, `MAX_UPLOAD_MB` i `TZ`.
+3. Wdróż Stack.
+4. Otwórz dashboard i skopiuj adres webhooka z ustawień.
+
+Dane SQLite i automatycznie wygenerowany token pozostaną w wolumenie `awesome-habits-dashboard-data`.
+
+## Import danych
+
+W Awesome Habits wykonaj eksport CSV, a następnie przeciągnij plik na dashboard lub wybierz go przez przycisk „Importuj CSV”. Importowany plik jest kompletnym snapshotem i zastępuje poprzedni zestaw rekordów.
+
+Plik `AwesomeHabits.csv` jest ignorowany przez Git, aby prywatne dane nie trafiły przypadkiem do publicznego repozytorium.
+
+Wymagane kolumny:
+
+```text
+Date, Name, Period, Type, Goal, Quantity, Status
+```
+
+Obsługiwane są także pola `Description`, `Archived`, `Unit`, `Lists` i `Note`. Plik powinien używać kodowania UTF-8; BOM jest akceptowany.
+
+### Webhook
+
+Wyślij eksport jako surowe body:
+
+```bash
+curl -X POST "https://subdomena.example.com/webhook/TWOJ_TOKEN" \
+  -H "Content-Type: text/csv" \
+  --data-binary @AwesomeHabits.csv
+```
+
+Albo jako multipart:
+
+```bash
+curl -X POST "https://subdomena.example.com/webhook/TWOJ_TOKEN" \
+  -F "file=@AwesomeHabits.csv;type=text/csv"
+```
+
+Token w ścieżce jest sekretem. Przy publicznym wdrożeniu użyj HTTPS i dodatkowo zabezpiecz sam dashboard przez Cloudflare Access, VPN lub uwierzytelnianie reverse proxy.
+
+Reverse proxy powinno przekazywać nagłówki `Host`, `X-Forwarded-Host` i `X-Forwarded-Proto`, aby interfejs wyświetlał prawidłowy publiczny URL webhooka.
+
+## Uruchomienie lokalne
+
+```bash
+python3 app.py
+```
+
+Aplikacja utworzy bazę w `data/habits.db`.
+
+## API
+
+| Metoda | Endpoint | Opis |
+|---|---|---|
+| `GET` | `/api/health` | Healthcheck |
+| `GET` | `/api/config` | Konfiguracja importu i URL webhooka |
+| `GET` | `/api/dashboard` | Dane dashboardu, filtry w query string |
+| `GET` | `/api/habits/{name}` | Szczegóły nawyku |
+| `POST` | `/api/import` | Import multipart z interfejsu |
+| `POST` | `/webhook/{token}` | Import surowego CSV lub multipart |
+
+## Testy
+
+```bash
+python3 -m unittest discover -s tests -v
+node --check static/app.js
+```
+
+## Rollback obrazu
+
+Każde wydanie otrzymuje tag `latest` i stały tag z krótkim SHA commita. Aby wrócić do konkretnej wersji, zmień tag obrazu w `docker-compose.yml`, a następnie wykonaj `docker compose up -d`.

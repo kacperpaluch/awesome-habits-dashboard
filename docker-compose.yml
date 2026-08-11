@@ -1,0 +1,16 @@
+services:
+  awesome-habits-dashboard:
+    image: kpa90/awesome-habits-dashboard:latest
+    container_name: awesome-habits-dashboard
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      TZ: ${TZ:-Europe/Warsaw}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-20}
+      WEBHOOK_TOKEN: ${WEBHOOK_TOKEN:-}
+    volumes:
+      - awesome-habits-dashboard-data:/app/data
+
+volumes:
+  awesome-habits-dashboard-data:

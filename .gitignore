@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Dane i sekrety
+data/
+.env
+.env.local
+AwesomeHabits.csv
+
+# Ogólne
+.DS_Store
+*.log
+*.tmp
