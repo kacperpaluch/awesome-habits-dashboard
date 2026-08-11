@@ -13,6 +13,7 @@ Self-hostowany dashboard analityczny dla eksportów CSV z aplikacji Awesome Habi
 - trzy stany okresu: wykonane, niewykonane i „w trakcie” dla bieżącego dnia/tygodnia,
 - skuteczność bez zaniżania wyniku przez trwające okresy, streaki, idealne dni, trend 7/30 oraz heatmapa,
 - automatyczny backup o wybranej godzinie, backup na żądanie i bezpieczne przywracanie,
+- historia importów, webhooków i backupów z filtrem dat oraz paginacją,
 - filtrowanie według nawyku, listy, okresu i zakresu dat,
 - responsywny interfejs oraz szczegóły każdego nawyku,
 - lokalna baza SQLite w trwałym wolumenie,
@@ -58,6 +59,8 @@ Przed każdym przywróceniem aplikacja automatycznie tworzy kopię `pre-restore`
 
 Domyślnie zachowywanych jest 14 najnowszych kopii. Zmienisz to przez `BACKUP_KEEP`; limit przesyłanego backupu ustawia `MAX_BACKUP_MB`. Kopie w wolumenie chronią przed błędnym importem lub przywróceniem, ale dla ochrony przed utratą hosta warto regularnie pobierać plik `.db` poza serwer.
 
+Każdy snapshot `.db` jest finalizowany jako samodzielny plik. `habits.db-wal` i `habits.db-shm` obok **aktywnej** bazy są normalnymi plikami roboczymi SQLite. Sidecary snapshotów w katalogu `backup/` nie są potrzebne i aplikacja automatycznie je usuwa.
+
 ## Import danych
 
 W Awesome Habits wykonaj eksport CSV, a następnie przeciągnij plik na dashboard lub wybierz go przez przycisk „Importuj CSV”. Importowany plik jest kompletnym snapshotem i zastępuje poprzedni zestaw rekordów.
@@ -91,6 +94,8 @@ curl -X POST "https://subdomena.example.com/webhook/TWOJ_TOKEN" \
 
 Token w ścieżce jest sekretem. Przy publicznym wdrożeniu użyj HTTPS i dodatkowo zabezpiecz sam dashboard przez Cloudflare Access, VPN lub uwierzytelnianie reverse proxy.
 
+W „Źródle danych” znajduje się paginowana historia poprawnych i odrzuconych webhooków/importów. Pokazuje czas, źródło, plik, zakres danych, liczbę rekordów, informację o zmianie snapshotu albo komunikat błędu. Filtr „Od–Do” pozwala ograniczyć historię bez długiego scrollowania.
+
 Reverse proxy powinno przekazywać nagłówki `Host`, `X-Forwarded-Host` i `X-Forwarded-Proto`, aby interfejs wyświetlał prawidłowy publiczny URL webhooka.
 
 ## Uruchomienie lokalne
@@ -111,11 +116,14 @@ Aplikacja utworzy bazę w `data/habits.db`.
 | `GET` | `/api/habits/{name}` | Szczegóły nawyku |
 | `POST` | `/api/import` | Import multipart z interfejsu |
 | `POST` | `/webhook/{token}` | Import surowego CSV lub multipart |
+| `GET` | `/api/imports` | Paginowana historia importów i webhooków |
 | `GET` | `/api/backups` | Status i lista zweryfikowanych kopii |
 | `POST` | `/api/backup` | Utworzenie backupu na żądanie |
 | `GET` | `/api/backups/{file}/download` | Pobranie wybranej kopii |
 | `POST` | `/api/backups/{file}/restore` | Przywrócenie kopii serwerowej |
 | `POST` | `/api/backups/restore-upload` | Przywrócenie przesłanej bazy |
+
+Endpointy historii przyjmują `page`, `per_page`, `date_from` i `date_to`.
 
 ## Testy
 

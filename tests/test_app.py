@@ -56,7 +56,10 @@ class AwesomeHabitsTests(unittest.TestCase):
             app.import_csv(b"Date,Name\n2026-08-11,Fiber\n", "test")
         with closing(app.connect()) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM records").fetchone()[0], 5)
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM imports").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM imports").fetchone()[0], 2)
+            failure = conn.execute("SELECT status,error FROM imports ORDER BY id DESC LIMIT 1").fetchone()
+            self.assertEqual(failure["status"], "failed")
+            self.assertTrue(failure["error"])
 
     def test_dashboard_metrics_filters_and_streaks(self):
         app.import_csv(CSV, "test")
@@ -115,6 +118,22 @@ class AwesomeHabitsTests(unittest.TestCase):
         first = app.backup_if_due(now)
         self.assertIsNotNone(first)
         self.assertIsNone(app.backup_if_due(now))
+
+    def test_import_history_is_paginated_and_marks_unchanged_data(self):
+        app.import_csv(CSV, "webhook", "first.csv")
+        app.import_csv(CSV, "webhook", "second.csv")
+        history = app.import_history({"page": ["1"], "per_page": ["1"]})
+        self.assertEqual(history["pagination"]["total"], 2)
+        self.assertEqual(history["items"][0]["source"], "webhook")
+        self.assertEqual(history["items"][0]["changed"], 0)
+
+    def test_backup_is_single_file_without_wal_sidecars(self):
+        app.import_csv(CSV, "test")
+        backup = app.backup_database("manual")
+        with closing(app.sqlite3.connect(f"file:{backup}?mode=ro&immutable=1", uri=True)) as conn:
+            self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+        self.assertFalse(Path(str(backup) + "-wal").exists())
+        self.assertFalse(Path(str(backup) + "-shm").exists())
 
     def test_restore_rejects_foreign_file_without_changing_data(self):
         app.import_csv(CSV, "test")

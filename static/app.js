@@ -4,6 +4,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const fmt = new Intl.NumberFormat("pl-PL", { maximumFractionDigits: 1 });
 const state = { start: null, end: null, range: "year", habit: "", list: "", period: "", bounds: null };
+const historyState = { tab: "imports", page: 1, perPage: 10, dateFrom: "", dateTo: "" };
 const months = ["Sty", "Lut", "Mar", "Kwi", "Maj", "Cze", "Lip", "Sie", "Wrz", "Paź", "Lis", "Gru"];
 const weekdays = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"];
 
@@ -49,16 +50,36 @@ async function loadConfig() {
   const config = await api("/api/config");
   $("#webhookUrl").textContent = config.webhook_url;
   $("#uploadLimit").textContent = config.max_upload_mb;
-  renderLatest(config.latest_import);
+  renderLatest(config.latest_event, config.latest_import);
   return config;
 }
 
-async function loadBackups() {
-  const status = await api("/api/backups");
+function renderBackupStatus(status) {
   const latest = status.latest;
   $("#backupStatus").innerHTML = latest ? `<strong>${status.healthy ? "Backup sprawdzony" : "Backup wymaga uwagi"}</strong><small>${escapeHtml(latest.file)} · ${latest.size_kb} KB · codziennie ${escapeHtml(status.backup_time)} · retencja ${status.keep} kopii</small>` : `<strong>Brak backupu</strong><small>Pierwszy powstanie po ${escapeHtml(status.backup_time)}, gdy baza będzie zawierała dane.</small>`;
-  $("#backupList").innerHTML = status.backups.length ? status.backups.map((item) => `<div class="backup-row"><div><strong>${item.kind === "pre_restore" ? "Kopia przed przywróceniem" : "Snapshot danych"}</strong><small>${new Date(item.modified).toLocaleString("pl-PL")} · ${item.size_kb} KB</small></div><div><a href="/api/backups/${encodeURIComponent(item.file)}/download">Pobierz</a><button data-restore="${escapeHtml(item.file)}">Przywróć</button></div></div>`).join("") : "";
+}
+function historyQuery() {
+  const params = new URLSearchParams({ page: historyState.page, per_page: historyState.perPage });
+  if (historyState.dateFrom) params.set("date_from", historyState.dateFrom);
+  if (historyState.dateTo) params.set("date_to", historyState.dateTo);
+  return params.toString();
+}
+function renderHistoryPagination(pagination) {
+  $("#historyCount").textContent = `${pagination.total} wpisów`;
+  $("#historyPage").textContent = `Strona ${pagination.page} z ${pagination.pages}`;
+  $("#historyPrevious").disabled = !pagination.has_previous; $("#historyNext").disabled = !pagination.has_next;
+}
+async function loadHistory() {
+  const backups = historyState.tab === "backups";
+  const result = await api(`/${backups ? "api/backups" : "api/imports"}?${historyQuery()}`);
+  const items = backups ? result.backups : result.items;
+  if (backups) renderBackupStatus(result);
+  $("#historyList").innerHTML = items.length ? items.map((item) => backups ? `<div class="backup-row"><div><strong>${item.kind === "pre_restore" ? "Kopia przed przywróceniem" : item.kind === "manual" ? "Backup ręczny" : "Backup automatyczny"}</strong><small>${new Date(item.modified).toLocaleString("pl-PL")} · ${item.size_kb} KB</small></div><div><a href="/api/backups/${encodeURIComponent(item.file)}/download">Pobierz</a><button data-restore="${escapeHtml(item.file)}">Przywróć</button></div></div>` : `<div class="import-row"><div><strong>${item.status === "failed" ? (item.source === "webhook" ? "Webhook odrzucony" : "Import odrzucony") : item.source === "webhook" ? "Webhook odebrany" : "Import z interfejsu"}</strong><small>${new Date(item.imported_at).toLocaleString("pl-PL")} · ${escapeHtml(item.filename)}</small></div><div><strong>${item.status === "failed" ? escapeHtml(item.error) : `${item.rows_count} rekordów · ${item.changed ? "dane zmienione" : "bez zmian"}`}</strong><small>${item.status === "failed" ? "Poprzednie dane pozostały bez zmian" : `${escapeHtml(item.min_date)}–${escapeHtml(item.max_date)}`}</small></div></div>`).join("") : "<p class='latest-import'>Brak wpisów w wybranym zakresie.</p>";
+  renderHistoryPagination(result.pagination);
   $$('[data-restore]').forEach((button) => button.addEventListener("click", () => restoreServerBackup(button.dataset.restore)));
+}
+async function loadBackupSummary() {
+  renderBackupStatus(await api("/api/backups?page=1&per_page=1"));
 }
 
 async function restoreServerBackup(filename) {
@@ -84,12 +105,15 @@ async function restoreUploadedBackup(file) {
 
 async function refreshAfterRestore() {
   state.bounds = null; state.start = null; state.end = null;
-  await Promise.all([loadConfig(), loadBackups(), loadDashboard(true)]);
+  await Promise.all([loadConfig(), loadBackupSummary(), loadHistory(), loadDashboard(true)]);
 }
-function renderLatest(item) {
-  $("#latestImport").innerHTML = item ? `<strong>Ostatni import</strong><br>${escapeHtml(item.filename)} · ${item.rows_count} rekordów<br>${new Date(item.imported_at).toLocaleString("pl-PL")} · ${escapeHtml(item.source)}` : "Nie zaimportowano jeszcze żadnego pliku.";
-  const dataState = $("#dataState"); dataState.classList.toggle("ready", Boolean(item));
-  dataState.lastChild.textContent = item ? ` ${item.rows_count} rekordów` : " Brak danych";
+function renderLatest(event, latestSuccessful) {
+  $("#latestImport").innerHTML = event ? event.status === "failed"
+    ? `<strong>${event.source === "webhook" ? "Ostatni webhook odrzucony" : "Ostatni import odrzucony"}</strong><br>${new Date(event.imported_at).toLocaleString("pl-PL")} · ${escapeHtml(event.error)}`
+    : `<strong>${event.source === "webhook" ? "Ostatni webhook" : "Ostatni import"}</strong><br>${escapeHtml(event.filename)} · ${event.rows_count} rekordów<br>${new Date(event.imported_at).toLocaleString("pl-PL")}`
+    : "Nie zaimportowano jeszcze żadnego pliku.";
+  const dataState = $("#dataState"); dataState.classList.toggle("ready", Boolean(latestSuccessful));
+  dataState.lastChild.textContent = latestSuccessful ? ` ${latestSuccessful.rows_count} rekordów` : " Brak danych";
 }
 
 async function importFile(file) {
@@ -99,7 +123,7 @@ async function importFile(file) {
   try {
     const result = await api("/api/import", { method: "POST", body: form });
     toast(`Zaimportowano ${result.rows} rekordów z ${result.habits} nawyków.`);
-    await Promise.all([loadConfig(), loadBackups()]); state.bounds = null; await loadDashboard(true);
+    await Promise.all([loadConfig(), loadBackupSummary(), loadHistory()]); state.bounds = null; await loadDashboard(true);
   } catch (error) { toast(error.message, true); }
   finally { $("#importButton").disabled = false; $("#importButton").textContent = "Importuj CSV"; $("#fileInput").value = ""; }
 }
@@ -199,17 +223,22 @@ function wireEvents() {
   $("#importButton").addEventListener("click", () => $("#fileInput").click()); $$(".import-trigger").forEach((el) => el.addEventListener("click", () => $("#fileInput").click()));
   $("#fileInput").addEventListener("change", (event) => importFile(event.target.files[0]));
   const drop = $(".drop-zone"); ["dragenter", "dragover"].forEach((name) => drop.addEventListener(name, (e) => { e.preventDefault(); drop.classList.add("drag"); })); ["dragleave", "drop"].forEach((name) => drop.addEventListener(name, (e) => { e.preventDefault(); drop.classList.remove("drag"); })); drop.addEventListener("drop", (e) => importFile(e.dataTransfer.files[0]));
-  $("#settingsButton").addEventListener("click", () => { $("#settingsDialog").showModal(); loadBackups().catch((error) => toast(error.message, true)); }); $$('[data-close]').forEach((button) => button.addEventListener("click", () => $(`#${button.dataset.close}`).close()));
+  $("#settingsButton").addEventListener("click", () => { $("#settingsDialog").showModal(); Promise.all([loadBackupSummary(), loadHistory()]).catch((error) => toast(error.message, true)); }); $$('[data-close]').forEach((button) => button.addEventListener("click", () => $(`#${button.dataset.close}`).close()));
   $("#copyWebhook").addEventListener("click", async () => { await navigator.clipboard.writeText($("#webhookUrl").textContent); toast("Adres webhooka skopiowany."); });
   $$("[data-range]").forEach((button) => button.addEventListener("click", () => setRange(button.dataset.range)));
   $("#applyRange").addEventListener("click", () => { state.start = $("#startDate").value; state.end = $("#endDate").value; if (state.start && state.end && state.start <= state.end) loadDashboard(); else toast("Wybierz poprawny zakres dat.", true); });
   [["#habitFilter", "habit"], ["#listFilter", "list"], ["#periodFilter", "period"]].forEach(([selector, key]) => $(selector).addEventListener("change", (e) => { state[key] = e.target.value; loadDashboard(); }));
   $("#clearFilters").addEventListener("click", () => { state.habit = state.list = state.period = ""; loadDashboard(); });
-  $("#backupNow").addEventListener("click", async () => { try { const result = await api("/api/backup", { method: "POST" }); toast(`Utworzono backup ${result.backup}`); await loadBackups(); } catch (error) { toast(error.message, true); } });
+  $("#backupNow").addEventListener("click", async () => { try { const result = await api("/api/backup", { method: "POST" }); toast(`Utworzono backup ${result.backup}`); historyState.tab = "backups"; historyState.page = 1; $$('[data-history-tab]').forEach((button) => button.classList.toggle("active", button.dataset.historyTab === "backups")); await Promise.all([loadBackupSummary(), loadHistory()]); } catch (error) { toast(error.message, true); } });
   $("#restoreUpload").addEventListener("click", () => $("#backupFileInput").click());
   $("#backupFileInput").addEventListener("change", (event) => restoreUploadedBackup(event.target.files[0]));
+  $$('[data-history-tab]').forEach((button) => button.addEventListener("click", async () => { historyState.tab = button.dataset.historyTab; historyState.page = 1; $$('[data-history-tab]').forEach((item) => item.classList.toggle("active", item === button)); await loadHistory(); }));
+  $("#historyApply").addEventListener("click", async () => { historyState.dateFrom = $("#historyFrom").value; historyState.dateTo = $("#historyTo").value; historyState.page = 1; await loadHistory(); });
+  $("#historyClear").addEventListener("click", async () => { $("#historyFrom").value = ""; $("#historyTo").value = ""; historyState.dateFrom = ""; historyState.dateTo = ""; historyState.page = 1; await loadHistory(); });
+  $("#historyPrevious").addEventListener("click", async () => { if (historyState.page > 1) { historyState.page -= 1; await loadHistory(); } });
+  $("#historyNext").addEventListener("click", async () => { historyState.page += 1; await loadHistory(); });
   window.addEventListener("resize", () => { clearTimeout(window.chartTimer); window.chartTimer = setTimeout(loadDashboard, 150); });
 }
 
 wireEvents();
-Promise.all([loadConfig(), loadBackups(), loadDashboard(true)]).catch((error) => toast(error.message, true));
+Promise.all([loadConfig(), loadBackupSummary(), loadHistory(), loadDashboard(true)]).catch((error) => toast(error.message, true));

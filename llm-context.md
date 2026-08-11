@@ -21,13 +21,15 @@ Awesome Habits Lens jest samodzielnym dashboardem dla pełnych eksportów CSV z 
 5. Dashboard czyta tylko najnowszy snapshot z `records`.
 6. Niezależny wątek tworzy raz dziennie po `BACKUP_TIME` zweryfikowany backup SQLite z retencją `BACKUP_KEEP`, jeśli baza zawiera dane.
 
+Każda poprawna i odrzucona próba przetworzenia CSV trafia do `imports` ze statusem i opcjonalnym błędem. `GET /api/imports` udostępnia historię stronicowaną i filtrowaną po datach; odrzucony import nie modyfikuje tabeli `records`.
+
 Token webhooka pochodzi z `WEBHOOK_TOKEN`. Gdy zmienna jest pusta, powstaje losowy token `secrets.token_urlsafe(24)` zapisany w `WEBHOOK_TOKEN_FILE` (domyślnie obok bazy w wolumenie). Ścieżki webhooków są redagowane w logach HTTP.
 
 ## Semantyka danych
 
 Pole `Status` z eksportu jest źródłem informacji o wykonaniu, ale niezakończony rekord z bieżącego dnia lub tygodnia otrzymuje stan `in_progress`. Nie obniża skuteczności ani trendu, dopóki jego okres się nie zakończy. `Type`, `Goal` i `Quantity` służą do prezentowania postępu i rekordów. Rekordy `Daily` budują heatmapę i idealne dni; `Weekly` mają osobne streaki z krokiem tygodniowym.
 
-Backup używa online backup API SQLite, sprawdza integralność, schemat i SHA-256. Harmonogram `BACKUP_TIME` (`HH:MM`, domyślnie `03:00`) działa według `TZ` kontenera i wykonuje najwyżej jedną kopię planową dziennie. Restore zawsze tworzy `awesome-habits-pre-restore-…db`, zanim zastąpi aktywną bazę. Backupy znajdują się domyślnie w `/app/data/backup`, więc pozostają w named volume.
+Backup używa online backup API SQLite, sprawdza integralność, schemat i SHA-256. Snapshot jest finalizowany z `journal_mode=DELETE`, odczytywany jako `immutable=1` i nie wymaga plików `-wal`/`-shm`; osierocone sidecary w katalogu backupu są sprzątane przy starcie. Harmonogram `BACKUP_TIME` (`HH:MM`, domyślnie `03:00`) działa według `TZ` kontenera i wykonuje najwyżej jedną kopię planową dziennie. Restore zawsze tworzy `awesome-habits-pre-restore-…db`, zanim zastąpi aktywną bazę. Backupy znajdują się domyślnie w `/app/data/backup`, więc pozostają w named volume.
 
 ## Weryfikacja
 

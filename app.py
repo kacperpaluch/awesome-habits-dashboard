@@ -116,7 +116,9 @@ def init_db() -> None:
                 sha256 TEXT NOT NULL,
                 rows_count INTEGER NOT NULL,
                 min_date TEXT,
-                max_date TEXT
+                max_date TEXT,
+                status TEXT NOT NULL DEFAULT 'success',
+                error TEXT
             );
             CREATE TABLE IF NOT EXISTS records (
                 id INTEGER PRIMARY KEY,
@@ -139,6 +141,11 @@ def init_db() -> None:
             PRAGMA user_version=1;
             """
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(imports)")}
+        if "status" not in columns:
+            conn.execute("ALTER TABLE imports ADD COLUMN status TEXT NOT NULL DEFAULT 'success'")
+        if "error" not in columns:
+            conn.execute("ALTER TABLE imports ADD COLUMN error TEXT")
 
 
 def validate_database(path: Path) -> dict:
@@ -149,7 +156,7 @@ def validate_database(path: Path) -> dict:
         with path.open("rb") as handle:
             if handle.read(16) != b"SQLite format 3\x00":
                 raise ValueError("Plik nie jest bazą SQLite")
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
         try:
             integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
             if integrity != "ok":
@@ -183,6 +190,19 @@ def backup_filename(kind: str = "backup") -> str:
     return f"awesome-habits-{kind}-{stamp}.db"
 
 
+def cleanup_backup_sidecars(path: Path) -> None:
+    for suffix in ("-wal", "-shm"):
+        Path(str(path) + suffix).unlink(missing_ok=True)
+
+
+def cleanup_backup_directory_sidecars() -> None:
+    if not BACKUP_DIR.is_dir():
+        return
+    for pattern in ("awesome-habits-*.db-wal", "awesome-habits-*.db-shm"):
+        for path in BACKUP_DIR.glob(pattern):
+            path.unlink(missing_ok=True)
+
+
 def backup_clock() -> tuple[int, int]:
     try:
         parsed = datetime.strptime(BACKUP_TIME, "%H:%M")
@@ -195,6 +215,7 @@ def prune_backups() -> None:
     backups = sorted(BACKUP_DIR.glob("awesome-habits-*.db"), key=lambda p: p.stat().st_mtime)
     for old in backups[:-BACKUP_KEEP]:
         old.unlink(missing_ok=True)
+        cleanup_backup_sidecars(old)
 
 
 def backup_database(kind: str = "backup", *, prune: bool = True) -> Path:
@@ -206,9 +227,11 @@ def backup_database(kind: str = "backup", *, prune: bool = True) -> Path:
         destination = sqlite3.connect(target)
         try:
             source.backup(destination)
+            destination.execute("PRAGMA journal_mode=DELETE")
         finally:
             destination.close()
             source.close()
+        cleanup_backup_sidecars(target)
         validation = validate_database(target)
         if not validation["valid"]:
             target.unlink(missing_ok=True)
@@ -244,14 +267,71 @@ def list_backups() -> list[dict]:
     return result
 
 
-def backup_status() -> dict:
+def history_options(params: dict[str, list[str]]) -> tuple[int, int, str | None, str | None]:
+    try:
+        page = max(1, int(params.get("page", ["1"])[0]))
+        per_page = min(50, max(1, int(params.get("per_page", ["10"])[0])))
+    except ValueError as exc:
+        raise ImportError("Nieprawidłowa strona historii") from exc
+    date_from = params.get("date_from", [""])[0] or None
+    date_to = params.get("date_to", [""])[0] or None
+    try:
+        if date_from:
+            date.fromisoformat(date_from)
+        if date_to:
+            date.fromisoformat(date_to)
+    except ValueError as exc:
+        raise ImportError("Daty historii muszą mieć format RRRR-MM-DD") from exc
+    if date_from and date_to and date_from > date_to:
+        raise ImportError("Data początkowa nie może być późniejsza niż końcowa")
+    return page, per_page, date_from, date_to
+
+
+def page_result(items: list[dict], total: int, page: int, per_page: int) -> dict:
+    pages = max(1, (total + per_page - 1) // per_page)
+    return {"items": items, "pagination": {"page": page, "per_page": per_page,
+            "total": total, "pages": pages, "has_previous": page > 1,
+            "has_next": page < pages}}
+
+
+def backup_status(params: dict[str, list[str]] | None = None) -> dict:
     backups = list_backups()
     latest = backups[0] if backups else None
     validation = validate_database(resolve_backup(latest["file"])) if latest else None
+    page, per_page, date_from, date_to = history_options(params or {})
+    filtered = [item for item in backups
+                if (not date_from or item["modified"][:10] >= date_from)
+                and (not date_to or item["modified"][:10] <= date_to)]
+    offset = (page - 1) * per_page
     return {"healthy": bool(latest and validation and validation["valid"]),
             "keep": BACKUP_KEEP, "backup_time": BACKUP_TIME,
             "latest": latest, "latest_validation": validation,
-            "backups": backups}
+            "backups": filtered[offset:offset + per_page],
+            "pagination": page_result([], len(filtered), page, per_page)["pagination"]}
+
+
+def import_history(params: dict[str, list[str]]) -> dict:
+    page, per_page, date_from, date_to = history_options(params)
+    clauses, values = [], []
+    if date_from:
+        clauses.append("substr(imported_at,1,10) >= ?")
+        values.append(date_from)
+    if date_to:
+        clauses.append("substr(imported_at,1,10) <= ?")
+        values.append(date_to)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    offset = (page - 1) * per_page
+    with database() as conn:
+        total = conn.execute(f"SELECT COUNT(*) FROM imports{where}", values).fetchone()[0]
+        rows = [dict(row) for row in conn.execute(
+            f"""SELECT current.*,
+                CASE WHEN current.status != 'success' THEN NULL
+                    WHEN current.sha256 = (SELECT previous.sha256 FROM imports previous
+                    WHERE previous.id < current.id AND previous.status = 'success'
+                    ORDER BY previous.id DESC LIMIT 1) THEN 0 ELSE 1 END AS changed
+                FROM imports current{where} ORDER BY current.id DESC LIMIT ? OFFSET ?""",
+            [*values, per_page, offset])]
+    return page_result(rows, total, page, per_page)
 
 
 def backup_if_due(now: datetime | None = None) -> Path | None:
@@ -280,7 +360,7 @@ def restore_database(source_path: Path) -> dict:
         if not validation["valid"]:
             raise ImportError(f"Nie można przywrócić backupu: {validation['error']}")
         safety = backup_database("pre-restore", prune=False)
-        source = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
+        source = sqlite3.connect(f"file:{source_path}?mode=ro&immutable=1", uri=True)
         destination = connect()
         try:
             source.backup(destination)
@@ -288,6 +368,8 @@ def restore_database(source_path: Path) -> dict:
         finally:
             destination.close()
             source.close()
+            cleanup_backup_sidecars(source_path)
+        init_db()
         restored = validate_database(DB_PATH)
         if not restored["valid"]:
             raise ImportError(f"Przywrócona baza nie przeszła kontroli: {restored['error']}")
@@ -363,14 +445,25 @@ def parse_csv(payload: bytes) -> list[dict]:
 
 
 def import_csv(payload: bytes, source: str, filename: str = "AwesomeHabits.csv") -> dict:
-    rows = parse_csv(payload)
     digest = hashlib.sha256(payload).hexdigest()
     imported_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    try:
+        rows = parse_csv(payload)
+    except ImportError as exc:
+        with database() as conn:
+            conn.execute(
+                """INSERT INTO imports(imported_at,source,filename,sha256,rows_count,
+                min_date,max_date,status,error) VALUES(?,?,?,?,0,NULL,NULL,'failed',?)""",
+                (imported_at, source, filename[:255], digest, str(exc)[:500]),
+            )
+        raise
     if not IMPORT_LOCK.acquire(blocking=False):
         raise ImportError("Inny import jest już w toku")
     try:
         with database() as conn:
-            previous = conn.execute("SELECT sha256 FROM imports ORDER BY id DESC LIMIT 1").fetchone()
+            previous = conn.execute(
+                "SELECT sha256 FROM imports WHERE status='success' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
             cur = conn.execute(
                 "INSERT INTO imports(imported_at,source,filename,sha256,rows_count,min_date,max_date) VALUES(?,?,?,?,?,?,?)",
                 (imported_at, source, filename[:255], digest, len(rows),
@@ -551,7 +644,9 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
     with database() as conn:
         bounds = conn.execute("SELECT MIN(date) min_date,MAX(date) max_date FROM records WHERE archived=0").fetchone()
         options = conn.execute("SELECT DISTINCT name,list_name,period FROM records WHERE archived=0 ORDER BY name").fetchall()
-        latest = conn.execute("SELECT * FROM imports ORDER BY id DESC LIMIT 1").fetchone()
+        latest = conn.execute(
+            "SELECT * FROM imports WHERE status='success' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
     week_groups = defaultdict(list)
     for row in rows:
         if row["period"] == "Daily":
@@ -678,16 +773,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_response({"ok": True})
             if parsed.path == "/api/config":
                 with database() as conn:
-                    latest = conn.execute("SELECT * FROM imports ORDER BY id DESC LIMIT 1").fetchone()
+                    latest_event = conn.execute("SELECT * FROM imports ORDER BY id DESC LIMIT 1").fetchone()
+                    latest = conn.execute(
+                        "SELECT * FROM imports WHERE status='success' ORDER BY id DESC LIMIT 1"
+                    ).fetchone()
                 host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host", f"localhost:{PORT}")
                 proto = self.headers.get("X-Forwarded-Proto", "http")
                 return self.json_response({"webhook_url": f"{proto}://{host}/webhook/{webhook_token()}",
                                            "max_upload_mb": MAX_UPLOAD_BYTES // 1024 // 1024,
-                                           "latest_import": dict(latest) if latest else None})
+                                           "latest_import": dict(latest) if latest else None,
+                                           "latest_event": dict(latest_event) if latest_event else None})
             if parsed.path == "/api/dashboard":
                 return self.json_response(dashboard(params))
             if parsed.path == "/api/backups":
-                return self.json_response(backup_status())
+                return self.json_response(backup_status(params))
+            if parsed.path == "/api/imports":
+                return self.json_response(import_history(params))
             if parsed.path.startswith("/api/backups/") and parsed.path.endswith("/download"):
                 filename = unquote(parsed.path.removeprefix("/api/backups/").removesuffix("/download"))
                 return self.file_response(resolve_backup(filename))
@@ -776,6 +877,7 @@ def backup_loop() -> None:
 
 def main() -> None:
     init_db()
+    cleanup_backup_directory_sidecars()
     webhook_token()
     try:
         backup_if_due()

@@ -94,11 +94,17 @@
       <div class="backup-actions"><button id="backupNow" class="button" type="button">Utwórz backup</button><button id="restoreUpload" class="button" type="button">Przywróć z pliku .db</button></div>
       <input id="backupFileInput" type="file" accept=".db,application/vnd.sqlite3" hidden>
       <div id="backupStatus" class="backup-status"></div>
-      <div id="backupList" class="backup-list"></div>
+    </section>
+    <section class="history-section">
+      <div class="history-heading"><h3>Historia danych</h3><span id="historyCount">0 wpisów</span></div>
+      <div class="history-tabs"><button class="active" type="button" data-history-tab="imports">Importy i webhooki</button><button type="button" data-history-tab="backups">Backupy</button></div>
+      <div class="history-filters"><label>Od<input id="historyFrom" type="date"></label><label>Do<input id="historyTo" type="date"></label><button id="historyApply" type="button">Filtruj</button><button id="historyClear" type="button">Wyczyść</button></div>
+      <div id="historyList" class="history-list"></div>
+      <div class="history-pagination"><button id="historyPrevious" type="button">← Poprzednia</button><span id="historyPage">Strona 1 z 1</span><button id="historyNext" type="button">Następna →</button></div>
     </section>
   </dialog>
   <dialog id="detailDialog" class="dialog detail-dialog"><button class="dialog-close" data-close="detailDialog" aria-label="Zamknij">×</button><div id="detailContent"></div></dialog>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js?v=3"></script>
+  <script src="/app.js?v=4"></script>
 </body>
 </html>

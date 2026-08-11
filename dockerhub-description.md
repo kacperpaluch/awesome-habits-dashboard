@@ -6,6 +6,7 @@ Prywatny, self-hostowany dashboard analityczny dla eksportów CSV z Awesome Habi
 
 - ręczny import CSV z przeglądarki,
 - prywatny webhook do automatycznego przesyłania eksportów,
+- historia webhooków, importów i backupów z paginacją oraz filtrem dat,
 - skuteczność, streaki, trendy 7/30, heatmapa i idealne dni,
 - bieżące dni i tygodnie oznaczane jako „w trakcie” bez zaniżania skuteczności,
 - automatyczne, zweryfikowane backupy SQLite oraz bezpieczne przywracanie,
