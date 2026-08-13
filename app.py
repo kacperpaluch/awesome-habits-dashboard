@@ -18,6 +18,7 @@ import threading
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -54,6 +55,7 @@ TOKEN_PATH = Path(os.getenv("WEBHOOK_TOKEN_FILE", str(DB_PATH.parent / "webhook-
 BACKUP_DIR = Path(os.getenv("BACKUP_DIR", str(DB_PATH.parent / "backup")))
 BACKUP_KEEP = max(1, int(os.getenv("BACKUP_KEEP", "14")))
 BACKUP_TIME = os.getenv("BACKUP_TIME", "03:00").strip()
+FAILED_IMPORT_KEEP = 50
 IMPORT_LOCK = threading.Lock()
 DB_LOCK = threading.RLock()
 
@@ -156,7 +158,7 @@ def validate_database(path: Path) -> dict:
         with path.open("rb") as handle:
             if handle.read(16) != b"SQLite format 3\x00":
                 raise ValueError("Plik nie jest bazą SQLite")
-        conn = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
             integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
             if integrity != "ok":
@@ -185,9 +187,29 @@ def validate_database(path: Path) -> dict:
                 "sha256": None}
 
 
+@lru_cache(maxsize=32)
+def cached_validation(path: str, fingerprint: tuple[int, int]) -> dict:
+    return validate_database(Path(path))
+
+
+def validate_backup(path: Path) -> dict:
+    """Validate a backup file, reusing the result while the file stays untouched."""
+    stat = path.stat()
+    return cached_validation(str(path), (stat.st_mtime_ns, stat.st_size))
+
+
 def backup_filename(kind: str = "backup") -> str:
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
     return f"awesome-habits-{kind}-{stamp}.db"
+
+
+def backup_moment(path: Path) -> datetime:
+    """Creation time taken from the filename, which survives copying and volume restores."""
+    try:
+        stamp = "-".join(path.stem.split("-")[-3:])
+        return datetime.strptime(stamp, "%Y-%m-%d_%H%M%S_%f").astimezone()
+    except ValueError:
+        return datetime.fromtimestamp(path.stat().st_mtime).astimezone()
 
 
 def cleanup_backup_sidecars(path: Path) -> None:
@@ -195,12 +217,28 @@ def cleanup_backup_sidecars(path: Path) -> None:
         Path(str(path) + suffix).unlink(missing_ok=True)
 
 
-def cleanup_backup_directory_sidecars() -> None:
+def absorb_wal(path: Path) -> None:
+    """Fold a leftover -wal into the database file; deleting it would lose committed data."""
+    if not Path(str(path) + "-wal").exists():
+        return
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        conn.close()
+
+
+def absorb_backup_sidecars() -> None:
     if not BACKUP_DIR.is_dir():
         return
-    for pattern in ("awesome-habits-*.db-wal", "awesome-habits-*.db-shm"):
-        for path in BACKUP_DIR.glob(pattern):
-            path.unlink(missing_ok=True)
+    for path in BACKUP_DIR.glob("awesome-habits-*.db"):
+        try:
+            absorb_wal(path)
+        except sqlite3.DatabaseError as exc:
+            print(f"Nie udało się scalić WAL backupu {path.name}: {exc}", flush=True)
+            continue
+        cleanup_backup_sidecars(path)
 
 
 def backup_clock() -> tuple[int, int]:
@@ -212,7 +250,7 @@ def backup_clock() -> tuple[int, int]:
 
 
 def prune_backups() -> None:
-    backups = sorted(BACKUP_DIR.glob("awesome-habits-*.db"), key=lambda p: p.stat().st_mtime)
+    backups = sorted(BACKUP_DIR.glob("awesome-habits-*.db"), key=backup_moment)
     for old in backups[:-BACKUP_KEEP]:
         old.unlink(missing_ok=True)
         cleanup_backup_sidecars(old)
@@ -255,11 +293,11 @@ def list_backups() -> list[dict]:
     if not BACKUP_DIR.is_dir():
         return []
     result = []
-    for path in sorted(BACKUP_DIR.glob("awesome-habits-*.db"), key=lambda p: p.stat().st_mtime, reverse=True):
+    for path in sorted(BACKUP_DIR.glob("awesome-habits-*.db"), key=backup_moment, reverse=True):
         stat = path.stat()
         result.append({
             "file": path.name, "size_kb": round(stat.st_size / 1024, 1),
-            "modified": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds"),
+            "modified": backup_moment(path).isoformat(timespec="seconds"),
             "kind": ("pre_restore" if "-pre-restore-" in path.name else
                      "manual" if "-manual-" in path.name else
                      "scheduled" if "-scheduled-" in path.name else "snapshot"),
@@ -287,8 +325,13 @@ def history_options(params: dict[str, list[str]]) -> tuple[int, int, str | None,
     return page, per_page, date_from, date_to
 
 
+def page_count(total: int, per_page: int) -> int:
+    return max(1, (total + per_page - 1) // per_page)
+
+
 def page_result(items: list[dict], total: int, page: int, per_page: int) -> dict:
-    pages = max(1, (total + per_page - 1) // per_page)
+    pages = page_count(total, per_page)
+    page = min(page, pages)
     return {"items": items, "pagination": {"page": page, "per_page": per_page,
             "total": total, "pages": pages, "has_previous": page > 1,
             "has_next": page < pages}}
@@ -297,11 +340,12 @@ def page_result(items: list[dict], total: int, page: int, per_page: int) -> dict
 def backup_status(params: dict[str, list[str]] | None = None) -> dict:
     backups = list_backups()
     latest = backups[0] if backups else None
-    validation = validate_database(resolve_backup(latest["file"])) if latest else None
+    validation = validate_backup(resolve_backup(latest["file"])) if latest else None
     page, per_page, date_from, date_to = history_options(params or {})
     filtered = [item for item in backups
                 if (not date_from or item["modified"][:10] >= date_from)
                 and (not date_to or item["modified"][:10] <= date_to)]
+    page = min(page, page_count(len(filtered), per_page))
     offset = (page - 1) * per_page
     return {"healthy": bool(latest and validation and validation["valid"]),
             "keep": BACKUP_KEEP, "backup_time": BACKUP_TIME,
@@ -320,9 +364,10 @@ def import_history(params: dict[str, list[str]]) -> dict:
         clauses.append("substr(imported_at,1,10) <= ?")
         values.append(date_to)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
-    offset = (page - 1) * per_page
     with database() as conn:
         total = conn.execute(f"SELECT COUNT(*) FROM imports{where}", values).fetchone()[0]
+        page = min(page, page_count(total, per_page))
+        offset = (page - 1) * per_page
         rows = [dict(row) for row in conn.execute(
             f"""SELECT current.*,
                 CASE WHEN current.status != 'success' THEN NULL
@@ -356,11 +401,15 @@ def backup_if_due(now: datetime | None = None) -> Path | None:
 def restore_database(source_path: Path) -> dict:
     """Validate, safety-backup, and restore the active database."""
     with DB_LOCK:
+        try:
+            absorb_wal(source_path)
+        except sqlite3.DatabaseError as exc:
+            raise ImportError(f"Nie można przywrócić backupu: {exc}") from exc
         validation = validate_database(source_path)
         if not validation["valid"]:
             raise ImportError(f"Nie można przywrócić backupu: {validation['error']}")
         safety = backup_database("pre-restore", prune=False)
-        source = sqlite3.connect(f"file:{source_path}?mode=ro&immutable=1", uri=True)
+        source = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
         destination = connect()
         try:
             source.backup(destination)
@@ -455,6 +504,12 @@ def import_csv(payload: bytes, source: str, filename: str = "AwesomeHabits.csv")
                 """INSERT INTO imports(imported_at,source,filename,sha256,rows_count,
                 min_date,max_date,status,error) VALUES(?,?,?,?,0,NULL,NULL,'failed',?)""",
                 (imported_at, source, filename[:255], digest, str(exc)[:500]),
+            )
+            # /api/import przyjmuje zgłoszenia bez tokenu, więc historia błędów ma twardy limit
+            conn.execute(
+                """DELETE FROM imports WHERE status='failed' AND id NOT IN
+                (SELECT id FROM imports WHERE status='failed' ORDER BY id DESC LIMIT ?)""",
+                (FAILED_IMPORT_KEEP,),
             )
         raise
     if not IMPORT_LOCK.acquire(blocking=False):
@@ -877,7 +932,7 @@ def backup_loop() -> None:
 
 def main() -> None:
     init_db()
-    cleanup_backup_directory_sidecars()
+    absorb_backup_sidecars()
     webhook_token()
     try:
         backup_if_due()

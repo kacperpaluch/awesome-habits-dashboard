@@ -59,7 +59,7 @@ Przed każdym przywróceniem aplikacja automatycznie tworzy kopię `pre-restore`
 
 Domyślnie zachowywanych jest 14 najnowszych kopii. Zmienisz to przez `BACKUP_KEEP`; limit przesyłanego backupu ustawia `MAX_BACKUP_MB`. Kopie w wolumenie chronią przed błędnym importem lub przywróceniem, ale dla ochrony przed utratą hosta warto regularnie pobierać plik `.db` poza serwer.
 
-Każdy snapshot `.db` jest finalizowany jako samodzielny plik. `habits.db-wal` i `habits.db-shm` obok **aktywnej** bazy są normalnymi plikami roboczymi SQLite. Sidecary snapshotów w katalogu `backup/` nie są potrzebne i aplikacja automatycznie je usuwa.
+Każdy snapshot `.db` jest finalizowany jako samodzielny plik. `habits.db-wal` i `habits.db-shm` obok **aktywnej** bazy są normalnymi plikami roboczymi SQLite. Gdyby po nagłym zatrzymaniu kontenera taki sidecar został przy pliku w katalogu `backup/`, aplikacja przy starcie scala go z bazą (`wal_checkpoint`) zamiast kasować — plik `-wal` może zawierać zatwierdzone dane, których nie ma jeszcze w pliku głównym.
 
 ## Import danych
 
@@ -94,7 +94,7 @@ curl -X POST "https://subdomena.example.com/webhook/TWOJ_TOKEN" \
 
 Token w ścieżce jest sekretem. Przy publicznym wdrożeniu użyj HTTPS i dodatkowo zabezpiecz sam dashboard przez Cloudflare Access, VPN lub uwierzytelnianie reverse proxy.
 
-W „Źródle danych” znajduje się paginowana historia poprawnych i odrzuconych webhooków/importów. Pokazuje czas, źródło, plik, zakres danych, liczbę rekordów, informację o zmianie snapshotu albo komunikat błędu. Filtr „Od–Do” pozwala ograniczyć historię bez długiego scrollowania.
+W „Źródle danych” znajduje się paginowana historia poprawnych i odrzuconych webhooków/importów. Pokazuje czas, źródło, plik, zakres danych, liczbę rekordów, informację o zmianie snapshotu albo komunikat błędu. Filtr „Od–Do” pozwala ograniczyć historię bez długiego scrollowania. Odrzuconych wpisów przechowywanych jest maksymalnie 50 — dzięki temu seria błędnych żądań nie rozdmuchuje bazy.
 
 Reverse proxy powinno przekazywać nagłówki `Host`, `X-Forwarded-Host` i `X-Forwarded-Proto`, aby interfejs wyświetlał prawidłowy publiczny URL webhooka.
 

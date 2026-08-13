@@ -65,6 +65,7 @@ function historyQuery() {
   return params.toString();
 }
 function renderHistoryPagination(pagination) {
+  historyState.page = pagination.page; // serwer przycina stronę do zakresu, np. po usunięciu backupów
   $("#historyCount").textContent = `${pagination.total} wpisów`;
   $("#historyPage").textContent = `Strona ${pagination.page} z ${pagination.pages}`;
   $("#historyPrevious").disabled = !pagination.has_previous; $("#historyNext").disabled = !pagination.has_next;

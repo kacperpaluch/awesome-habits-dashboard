@@ -1,3 +1,5 @@
+import os
+import shutil
 import tempfile
 import unittest
 from contextlib import closing
@@ -149,6 +151,59 @@ class AwesomeHabitsTests(unittest.TestCase):
                     '"2026-08-11","Błonnik","Daily","Building","25","10,5","Incomplete"\n').encode()
         rows = app.parse_csv(csv_data)
         self.assertEqual(rows[0]["quantity"], 10.5)
+
+    def test_backup_with_leftover_wal_keeps_committed_rows(self):
+        app.import_csv(CSV, "test")
+        backup = app.backup_database("manual")
+        conn = app.sqlite3.connect(backup)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""INSERT INTO records(date,name,description,archived,period,habit_type,goal,
+                     quantity,unit,status,list_name,note,import_id)
+                     SELECT date,'Extra',description,archived,period,habit_type,goal,quantity,unit,
+                     status,list_name,note,import_id FROM records LIMIT 1""")
+        conn.commit()
+        stale = app.BACKUP_DIR / app.backup_filename("manual")
+        shutil.copy(backup, stale)
+        shutil.copy(str(backup) + "-wal", str(stale) + "-wal")
+        conn.close()
+
+        self.assertEqual(app.validate_database(stale)["counts"]["records"], 6)
+        app.absorb_backup_sidecars()
+        self.assertFalse(Path(str(stale) + "-wal").exists())
+        self.assertEqual(app.validate_database(stale)["counts"]["records"], 6)
+        app.restore_database(stale)
+        with closing(app.connect()) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM records").fetchone()[0], 6)
+
+    def test_backup_time_and_validation_survive_mtime_rewrite(self):
+        app.import_csv(CSV, "test")
+        backup = app.backup_database("manual")
+        self.assertIs(app.validate_backup(backup), app.validate_backup(backup))
+        os.utime(backup, (0, 0))
+        self.assertTrue(app.list_backups()[0]["modified"].startswith(date.today().isoformat()))
+
+    def test_out_of_range_page_is_clamped(self):
+        app.import_csv(CSV, "test")
+        history = app.import_history({"page": ["9"], "per_page": ["10"]})
+        self.assertEqual(history["pagination"]["page"], 1)
+        self.assertFalse(history["pagination"]["has_previous"])
+        self.assertTrue(history["items"])
+        backups = app.backup_status({"page": ["9"], "per_page": ["10"]})
+        self.assertEqual(backups["pagination"]["page"], 1)
+        self.assertTrue(backups["backups"])
+
+    def test_failed_imports_are_capped(self):
+        original = app.FAILED_IMPORT_KEEP
+        app.FAILED_IMPORT_KEEP = 3
+        try:
+            for _ in range(5):
+                with self.assertRaises(app.ImportError):
+                    app.import_csv(b"nie csv", "interfejs")
+        finally:
+            app.FAILED_IMPORT_KEEP = original
+        with closing(app.connect()) as conn:
+            failed = conn.execute("SELECT COUNT(*) FROM imports WHERE status='failed'").fetchone()[0]
+        self.assertEqual(failed, 3)
 
     def test_multipart_extraction(self):
         body = (b"--abc\r\nContent-Disposition: form-data; name=\"file\"; filename=\"data.csv\"\r\n"
