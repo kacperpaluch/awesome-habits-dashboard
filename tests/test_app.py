@@ -175,6 +175,20 @@ class AwesomeHabitsTests(unittest.TestCase):
         with closing(app.connect()) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM records").fetchone()[0], 6)
 
+    def test_changed_import_is_preceded_by_backup_of_previous_snapshot(self):
+        app.import_csv(CSV, "test")
+        self.assertIsNone(app.import_csv(CSV, "test")["pre_import_backup"])
+
+        changed = CSV.replace(b"2026-08-11,Fiber", b"2026-08-12,Fiber")
+        pre_import = app.import_csv(changed, "test")["pre_import_backup"]
+        self.assertIsNotNone(pre_import)
+        backup = app.BACKUP_DIR / pre_import
+        app.restore_database(backup)
+        with closing(app.connect()) as conn:
+            dates = {row[0] for row in conn.execute("SELECT date FROM records WHERE name='Fiber'")}
+        self.assertIn("2026-08-11", dates)
+        self.assertNotIn("2026-08-12", dates)
+
     def test_backup_time_and_validation_survive_mtime_rewrite(self):
         app.import_csv(CSV, "test")
         backup = app.backup_database("manual")

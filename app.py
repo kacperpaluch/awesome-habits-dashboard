@@ -299,6 +299,7 @@ def list_backups() -> list[dict]:
             "file": path.name, "size_kb": round(stat.st_size / 1024, 1),
             "modified": backup_moment(path).isoformat(timespec="seconds"),
             "kind": ("pre_restore" if "-pre-restore-" in path.name else
+                     "pre_import" if "-pre-import-" in path.name else
                      "manual" if "-manual-" in path.name else
                      "scheduled" if "-scheduled-" in path.name else "snapshot"),
         })
@@ -519,6 +520,10 @@ def import_csv(payload: bytes, source: str, filename: str = "AwesomeHabits.csv")
             previous = conn.execute(
                 "SELECT sha256 FROM imports WHERE status='success' ORDER BY id DESC LIMIT 1"
             ).fetchone()
+        # Import podmienia cały snapshot, więc poprzedni stan zapisujemy zanim zniknie.
+        unchanged = bool(previous and previous["sha256"] == digest)
+        pre_import = backup_database("pre-import").name if previous and not unchanged else None
+        with database() as conn:
             cur = conn.execute(
                 "INSERT INTO imports(imported_at,source,filename,sha256,rows_count,min_date,max_date) VALUES(?,?,?,?,?,?,?)",
                 (imported_at, source, filename[:255], digest, len(rows),
@@ -544,7 +549,7 @@ def import_csv(payload: bytes, source: str, filename: str = "AwesomeHabits.csv")
             "ok": True, "import_id": import_id, "rows": len(rows),
             "habits": len({r["name"] for r in rows}), "min_date": min(r["date"] for r in rows),
             "max_date": max(r["date"] for r in rows),
-            "unchanged": bool(previous and previous["sha256"] == digest),
+            "unchanged": unchanged, "pre_import_backup": pre_import,
             "backup": backup_name, "backup_error": backup_error,
         }
     finally:

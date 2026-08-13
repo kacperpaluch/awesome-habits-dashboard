@@ -55,9 +55,9 @@ Aplikacja tworzy raz dziennie zweryfikowany snapshot SQLite w podkatalogu `backu
 - przywrócić kopię serwerową,
 - przywrócić bazę z przesłanego pliku `.db`.
 
-Przed każdym przywróceniem aplikacja automatycznie tworzy kopię `pre-restore`. Backup jest akceptowany dopiero po sprawdzeniu nagłówka SQLite, `PRAGMA integrity_check`, wymaganych tabel i sumy SHA-256. Przywrócenie wymaga wpisania `PRZYWRÓĆ`.
+Przed każdym przywróceniem aplikacja automatycznie tworzy kopię `pre-restore`, a przed każdym importem, który faktycznie zmienia dane — kopię `pre-import`. Import podmienia cały snapshot, więc bez tej kopii wysłanie okrojonego eksportu kasowałoby poprzedni stan bezpowrotnie. Ponowne wysłanie tego samego pliku niczego nie nadpisuje i nie tworzy kopii. Backup jest akceptowany dopiero po sprawdzeniu nagłówka SQLite, `PRAGMA integrity_check`, wymaganych tabel i sumy SHA-256. Przywrócenie wymaga wpisania `PRZYWRÓĆ`.
 
-Domyślnie zachowywanych jest 14 najnowszych kopii. Zmienisz to przez `BACKUP_KEEP`; limit przesyłanego backupu ustawia `MAX_BACKUP_MB`. Kopie w wolumenie chronią przed błędnym importem lub przywróceniem, ale dla ochrony przed utratą hosta warto regularnie pobierać plik `.db` poza serwer.
+Domyślnie zachowywanych jest 14 najnowszych kopii — wspólnie dla kopii planowych, ręcznych, `pre-import` i `pre-restore`. Przy częstych importach zmieniających dane warto podnieść `BACKUP_KEEP`, żeby kopie planowe nie wypadły z retencji. Zmienisz to przez `BACKUP_KEEP`; limit przesyłanego backupu ustawia `MAX_BACKUP_MB`. Kopie w wolumenie chronią przed błędnym importem lub przywróceniem, ale dla ochrony przed utratą hosta warto regularnie pobierać plik `.db` poza serwer.
 
 Każdy snapshot `.db` jest finalizowany jako samodzielny plik. `habits.db-wal` i `habits.db-shm` obok **aktywnej** bazy są normalnymi plikami roboczymi SQLite. Gdyby po nagłym zatrzymaniu kontenera taki sidecar został przy pliku w katalogu `backup/`, aplikacja przy starcie scala go z bazą (`wal_checkpoint`) zamiast kasować — plik `-wal` może zawierać zatwierdzone dane, których nie ma jeszcze w pliku głównym.
 
