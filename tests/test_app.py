@@ -75,6 +75,10 @@ class AwesomeHabitsTests(unittest.TestCase):
         gym = next(item for item in result["habits"] if item["name"] == "Gym")
         self.assertEqual((gym["missed"], gym["in_progress"]), (0, 1))
         self.assertNotIn("2026-08-11", {item["date"] for item in result["analytics"]["trends"]["daily"]})
+        self.assertIn("weekly", result["analytics"]["trends"])
+        self.assertIn("goal_metrics", result["analytics"])
+        self.assertIn("data_quality", result["analytics"])
+        self.assertEqual(result["analytics"]["data_quality"]["habits"][0]["coverage"], 100.0)
         health = app.dashboard({"list": ["Health"]}, today=date(2026, 8, 11))
         self.assertEqual(health["summary"]["records"], 4)
 

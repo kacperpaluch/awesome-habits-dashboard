@@ -626,6 +626,29 @@ def rate_of(rows: list[dict], today: date | None = None) -> float | None:
     return round(sum(is_complete(r) for r in resolved) / len(resolved) * 100, 1) if resolved else None
 
 
+def period_series(rows: list[dict], period: str, today: date | None = None) -> list[dict]:
+    """Build the same daily/weekly trend contract used by Habitify Lens."""
+    today = today or date.today()
+    buckets = defaultdict(list)
+    for row in rows:
+        if row["period"].lower() != period.lower():
+            continue
+        key = period_key(date.fromisoformat(row["date"]), row["period"]).isoformat()
+        buckets[key].append(row)
+    points, rates = [], []
+    for key, items in sorted(buckets.items()):
+        if any(record_state(row, today) == "in_progress" for row in items):
+            continue
+        value = sum(is_complete(row) for row in items) / len(items) * 100
+        rates.append(value)
+        points.append({
+            "date": key, "rate": round(value, 1),
+            "avg7": round(statistics.fmean(rates[-7:]), 1),
+            "avg30": round(statistics.fmean(rates[-30:]), 1),
+        })
+    return points
+
+
 def streak_rows(all_rows: list[dict], name: str, period: str) -> list[dict]:
     return [r for r in all_rows if r["name"] == name and r["period"] == period]
 
@@ -680,6 +703,20 @@ def goal_metrics(rows: list[dict]) -> dict:
     }
 
 
+def coverage_metrics(rows: list[dict]) -> dict:
+    if not rows:
+        return {"first": None, "last": None, "present": 0, "expected": 0, "gaps": 0, "coverage": 0}
+    unique = sorted({period_key(date.fromisoformat(row["date"]), row["period"]) for row in rows})
+    weekly = rows[0]["period"].lower() == "weekly"
+    expected = ((unique[-1] - unique[0]).days // (7 if weekly else 1)) + 1
+    gaps = max(0, expected - len(unique))
+    return {
+        "first": unique[0].isoformat(), "last": unique[-1].isoformat(),
+        "present": len(unique), "expected": expected, "gaps": gaps,
+        "coverage": round(len(unique) / expected * 100, 1) if expected else 0,
+    }
+
+
 def previous_period_rows(params: dict[str, list[str]]) -> list[dict]:
     """Rekordy z okresu tuż przed wybranym, tej samej długości — baza do porównania."""
     if not (params.get("start") and params.get("end")):
@@ -731,14 +768,8 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
                 "total": len(items),
                 "rate": round(sum(is_complete(r) for r in items) / len(items) * 100)}
                for key, items in sorted(days.items())]
-    day_rates = []
-    for item in heatmap:
-        if item["in_progress"]:
-            continue
-        day_rates.append(item["rate"])
-        item["avg7"] = round(statistics.fmean(day_rates[-7:]), 1)
-        item["avg30"] = round(statistics.fmean(day_rates[-30:]), 1)
-    trend = [item for item in heatmap if not item["in_progress"]]
+    daily_series = period_series(rows, "Daily", today)
+    weekly_series = period_series(rows, "Weekly", today)
     weekday_stats = []
     for weekday in range(7):
         items = [r for r in rows if r["period"] == "Daily" and date.fromisoformat(r["date"]).weekday() == weekday]
@@ -791,7 +822,8 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
     comparison = {"current_rate": current_rate, "previous_rate": previous_rate,
                   "delta": round(current_rate - previous_rate, 1) if current_rate is not None and previous_rate is not None else None,
                   "current_records": len(rows), "previous_records": len(previous_rows)}
-    series = [item["rate"] for item in trend]
+    primary_series = daily_series or weekly_series
+    series = [item["rate"] for item in primary_series]
     momentum = None
     if len(series) >= 28:
         momentum = round(statistics.fmean(series[-14:]) - statistics.fmean(series[-28:-14]), 1)
@@ -831,6 +863,14 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
                              "goal": resolved_items[-1]["goal"], **goal_metrics(resolved_items)})
     behaviors.sort(key=lambda x: (-x["longest_break"], x["name"].lower()))
     records_data.sort(key=lambda x: x["name"].lower())
+    quality_groups = defaultdict(list)
+    for row in all_rows:
+        quality_groups[(row["name"], row["period"])].append(row)
+    quality = [{"name": name, "period": period, **coverage_metrics(items)}
+               for (name, period), items in sorted(quality_groups.items())]
+    coverage_warning = None
+    if previous_rows and (len(rows) < len(previous_rows) * .7 or len(rows) > len(previous_rows) * 1.3):
+        coverage_warning = "Porównywane okresy mają różną liczbę rekordów; zmianę interpretuj ostrożnie."
     return {
         "summary": {"done": done, "missed": missed, "in_progress": in_progress,
                     "records": total, "resolved": done + missed,
@@ -844,16 +884,21 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
         "options": {"habits": sorted({r["name"] for r in options}),
                     "lists": sorted({r["list_name"] for r in options if r["list_name"]}),
                     "periods": sorted({r["period"] for r in options})},
-        "analytics": {"trends": {"daily": trend}, "weekdays": weekday_stats, "monthly": monthly,
+        "analytics": {"trends": {"daily": daily_series, "weekly": weekly_series, "momentum": momentum},
+                      "weekdays": weekday_stats, "monthly": monthly,
                       "regularity": {"weekly_stddev": round(statistics.pstdev(week_rates), 1) if len(week_rates) > 1 else None,
                                      "weeks": len(week_rates)},
                       "comparison": comparison, "momentum": momentum,
                       "best_weekday": best_weekday, "worst_weekday": worst_weekday,
                       "lists": lists, "behaviors": behaviors, "records": records_data,
+                      "goal_metrics": records_data,
                       "most_improved": most_improved, "most_regressed": most_regressed,
                       "today": {"date": today.isoformat(), "done": today_done, "total": len(current_period),
                                 "pending": sorted(pending, key=lambda x: x["name"].lower())},
-                      "latest_import": dict(latest) if latest else None},
+                      "latest_import": dict(latest) if latest else None,
+                      "data_quality": {"latest_import": dict(latest) if latest else None,
+                                       "habits": quality, "coverage_warning": coverage_warning,
+                                       "current_records": len(rows), "previous_records": len(previous_rows)}},
     }
 
 

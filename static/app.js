@@ -1,330 +1,550 @@
-"use strict";
+const state = {
+  range: "year",
+  start: "",
+  end: "",
+  habit: "",
+  list: "",
+  period: "",
+  data: null,
+};
+const historyState = { tab: "imports", page: 1, perPage: 10, dateFrom: "", dateTo: "" };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
-const fmt = new Intl.NumberFormat("pl-PL", { maximumFractionDigits: 1 });
-const state = { start: null, end: null, range: "year", habit: "", list: "", period: "", bounds: null };
-const historyState = { tab: "imports", page: 1, perPage: 10, dateFrom: "", dateTo: "" };
-const months = ["Sty", "Lut", "Mar", "Kwi", "Maj", "Cze", "Lip", "Sie", "Wrz", "Paź", "Lis", "Gru"];
+const pad = (n) => String(n).padStart(2, "0");
+const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseDate = (s) => new Date(`${s}T12:00:00`);
+const fmtNumber = new Intl.NumberFormat("pl-PL", { maximumFractionDigits: 1 });
+const months = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"];
 const weekdays = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"];
+const plural = (n, one, few, many) =>
+  n === 1 ? one : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? few : many;
 
 function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
-}
-function iso(day) { return day.toISOString().slice(0, 10); }
-function parseDate(value) { return new Date(`${value}T12:00:00`); }
-function toast(message, error = false) {
-  const box = $("#toast"); box.textContent = message; box.className = `toast show${error ? " error" : ""}`;
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => box.className = "toast", 3800);
-}
-async function copyText(value) {
-  try { await navigator.clipboard.writeText(value); return true; } catch { /* brak schowka poza secure context, np. http://192.168.x.x */ }
-  const field = document.createElement("textarea");
-  field.value = value; field.style.cssText = "position:fixed;top:0;opacity:0";
-  document.body.append(field); field.select();
-  const copied = document.execCommand("copy"); field.remove();
-  return copied;
-}
-async function api(path, options) {
-  const response = await fetch(path, options);
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Błąd HTTP ${response.status}`);
-  return body;
-}
-function query() {
-  const params = new URLSearchParams();
-  for (const key of ["start", "end", "habit", "list", "period"]) if (state[key]) params.set(key, state[key]);
-  return params.toString();
-}
-function setRange(kind) {
-  state.range = kind; $$("[data-range]").forEach((button) => button.classList.toggle("active", button.dataset.range === kind));
-  $("#customRange").classList.toggle("hidden", kind !== "custom");
-  if (kind === "custom" || !state.bounds?.max_date) return;
-  const end = parseDate(state.bounds.max_date); let start = new Date(end);
-  if (kind === "month") start.setMonth(start.getMonth() - 1);
-  if (kind === "quarter") start.setMonth(start.getMonth() - 3);
-  if (kind === "half") start.setMonth(start.getMonth() - 6);
-  if (kind === "year") start.setFullYear(start.getFullYear() - 1);
-  state.start = kind === "all" ? state.bounds.min_date : iso(start); state.end = state.bounds.max_date;
-  loadDashboard();
-}
-function populateSelect(selector, values, label) {
-  const select = $(selector); const current = select.value;
-  select.innerHTML = `<option value="">${label}</option>` + values.map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
-  select.value = values.includes(current) ? current : "";
+  return String(value ?? "").replace(/[&<>'"]/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
+  }[ch]));
 }
 
-async function loadConfig() {
-  const config = await api("/api/config");
-  $("#webhookUrl").textContent = config.webhook_url;
-  $("#uploadLimit").textContent = config.max_upload_mb;
-  renderLatest(config.latest_event, config.latest_import);
-  return config;
+function toast(message, error = false) {
+  const node = $("#toast");
+  node.textContent = message;
+  node.className = `toast show${error ? " error" : ""}`;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => node.className = "toast", 3200);
+}
+
+function dateRange(kind, bounds) {
+  const end = bounds?.max_date ? parseDate(bounds.max_date) : new Date();
+  let start = new Date(end);
+  if (kind === "month") start = new Date(end.getFullYear(), end.getMonth(), 1, 12);
+  if (kind === "quarter") start.setMonth(start.getMonth() - 3, start.getDate() + 1);
+  if (kind === "half") start.setMonth(start.getMonth() - 6, start.getDate() + 1);
+  if (kind === "year") start.setFullYear(start.getFullYear() - 1, start.getDate() + 1);
+  if (kind === "all") start = bounds?.min_date ? parseDate(bounds.min_date) : start;
+  if (kind === "custom") return { start: state.start, end: state.end };
+  return { start: iso(start), end: iso(end) };
+}
+
+function queryString(includeHabit = true) {
+  const params = new URLSearchParams();
+  if (state.start) params.set("start", state.start);
+  if (state.end) params.set("end", state.end);
+  if (includeHabit && state.habit) params.set("habit", state.habit);
+  if (state.list) params.set("list", state.list);
+  if (state.period) params.set("period", state.period);
+  return params.toString();
+}
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "Nie udało się pobrać danych");
+  return payload;
+}
+
+async function copyText(value) {
+  try {
+    if (navigator.clipboard) await navigator.clipboard.writeText(value);
+    else { const area = document.createElement("textarea"); area.value = value; document.body.append(area); area.select(); document.execCommand("copy"); area.remove(); }
+    return true;
+  } catch (_) { return false; }
+}
+
+async function load(initial = false) {
+  $("#syncState").innerHTML = "<i></i> Aktualizuję…";
+  try {
+    let data = await api(`/api/dashboard?${queryString()}`);
+    if (initial) {
+      const selected = dateRange(state.range, data.bounds);
+      state.start = selected.start;
+      state.end = selected.end;
+      data = await api(`/api/dashboard?${queryString()}`);
+      populateOptions(data.options);
+    }
+    state.data = data;
+    render(data);
+    $("#syncState").innerHTML = `<i></i> ${data.summary.records} rekordów`;
+  } catch (error) {
+    $("#syncState").textContent = "Błąd danych";
+    toast(error.message, true);
+  }
+}
+
+function populateOptions(options) {
+  function fill(selector, values, fallback) {
+    const select = $(selector);
+    const current = select.value;
+    select.innerHTML = `<option value="">${fallback}</option>`;
+    values.forEach((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      select.append(option);
+    });
+    select.value = current;
+  }
+  fill("#habitFilter", options.habits, "Wszystkie nawyki");
+  fill("#listFilter", options.lists, "Wszystkie listy");
+  fill("#periodFilter", options.periods, "Dzienny i tygodniowy");
+}
+
+function render(data) {
+  const s = data.summary;
+  $("#metricRate").textContent = s.rate === null ? "—" : `${fmtNumber.format(s.rate)}%`;
+  $("#metricDone").textContent = fmtNumber.format(s.done);
+  $("#metricMissed").textContent = fmtNumber.format(s.missed);
+  $("#metricProgress").textContent = fmtNumber.format(s.in_progress);
+  $("#metricPerfect").textContent = fmtNumber.format(s.perfect_days);
+  $("#metricRateSub").textContent = `${s.resolved} zakończonych okresów`;
+  $("#dataRange").textContent = state.start && state.end ? `${state.start} — ${state.end}` : "Cały okres";
+  renderToday(data.analytics?.today);
+  renderHeatmap(data.heatmap);
+  renderHabits(data.habits);
+  renderAnalytics(data.analytics);
+}
+
+function signed(value, suffix = " pp") {
+  if (value === null || value === undefined) return "—";
+  return `${value > 0 ? "+" : ""}${fmtNumber.format(value)}${suffix}`;
+}
+
+function renderAnalytics(analytics) {
+  if (!analytics) return;
+  const comparison = analytics.comparison;
+  $("#comparisonValue").textContent = signed(comparison.delta);
+  $("#comparisonValue").className = comparison.delta > 0 ? "positive" : comparison.delta < 0 ? "negative" : "";
+  $("#comparisonMeta").textContent = comparison.previous_rate === null
+    ? "Brak danych w poprzednim okresie"
+    : `${fmtNumber.format(comparison.previous_rate)}% poprzednio · ${comparison.previous_records} zapisów`;
+  $("#momentumValue").textContent = signed(analytics.trends.momentum);
+  $("#momentumValue").className = analytics.trends.momentum > 0 ? "positive" : analytics.trends.momentum < 0 ? "negative" : "";
+  $("#bestWeekday").textContent = analytics.best_weekday ? `${weekdays[analytics.best_weekday.day]} · ${fmtNumber.format(analytics.best_weekday.rate)}%` : "—";
+  $("#worstWeekday").textContent = analytics.worst_weekday ? `Najsłabiej: ${weekdays[analytics.worst_weekday.day]} · ${fmtNumber.format(analytics.worst_weekday.rate)}%` : "Za mało danych";
+  const sd = analytics.regularity.weekly_stddev;
+  $("#regularityValue").textContent = sd === null ? "Za mało danych" : sd <= 5 ? "Bardzo stabilnie" : sd <= 15 ? "Stabilnie" : "Nierówny rytm";
+  $("#regularityValue").title = sd === null ? "Potrzebne co najmniej dwa tygodnie" : `Odchylenie tygodniowe: ${sd} pp`;
+
+  renderTrend(analytics.trends.daily.length ? analytics.trends.daily : analytics.trends.weekly);
+  renderBars("#weekdayBars", analytics.weekdays.filter((x) => x.records).map((x) => ({ name: weekdays[x.day], rate: x.rate, meta: `${x.records}` })));
+  renderBars("#listBars", analytics.lists.map((x) => ({ name: x.name, rate: x.rate, meta: `${x.done}/${x.total}${x.in_progress ? ` · ${x.in_progress} w trakcie` : ""}` })));
+  renderMonthly(analytics.monthly);
+  renderHabitInsights(analytics);
+  renderRecords(analytics.goal_metrics);
+  renderQuality(analytics.data_quality);
+}
+
+function renderBars(selector, items) {
+  $(selector).innerHTML = items.length ? items.map((item) => `
+    <div class="bar-row"><span>${escapeHtml(item.name)}</span><div class="bar-track"><i style="width:${item.rate || 0}%"></i></div><strong title="${escapeHtml(item.meta)} zapisów">${item.rate === null ? "—" : `${fmtNumber.format(item.rate)}%`}</strong></div>`).join("") : "<p class='hint'>Brak danych.</p>";
+}
+
+function renderMonthly(items) {
+  $("#monthlyGrid").innerHTML = items.length ? items.map((item) => {
+    const [year, month] = item.month.split("-").map(Number);
+    return `<article class="month-card"><span>${months[month - 1]} ${year}</span><strong>${item.rate === null ? "—" : `${fmtNumber.format(item.rate)}%`}</strong><small>${item.perfect_days} ${plural(item.perfect_days, "idealny dzień", "idealne dni", "idealnych dni")} · ${item.records} ${plural(item.records, "zapis", "zapisy", "zapisów")}</small><div class="mini-progress"><i style="width:${item.rate || 0}%"></i></div></article>`;
+  }).join("") : "<p class='hint'>Brak miesięcy z danymi dziennymi.</p>";
+}
+
+function renderHabitInsights(analytics) {
+  const items = [];
+  if (analytics.most_improved) items.push({
+    title: "Największa poprawa", name: analytics.most_improved.name,
+    value: signed(analytics.most_improved.delta), reliable: analytics.most_improved.reliable,
+  });
+  if (analytics.most_regressed) items.push({
+    title: "Największy spadek", name: analytics.most_regressed.name,
+    value: signed(analytics.most_regressed.delta), reliable: analytics.most_regressed.reliable,
+  });
+  const best = [...analytics.behaviors].filter((x) => x.median_recovery !== null).sort((a, b) => a.median_recovery - b.median_recovery)[0];
+  if (best) items.push({ title: "Najszybszy powrót", name: best.name, value: `${fmtNumber.format(best.median_recovery)} ${plural(Math.round(best.median_recovery), "okres", "okresy", "okresów")}`, reliable: best.recoveries >= 3 });
+  const longest = [...analytics.behaviors].sort((a, b) => b.longest_break - a.longest_break)[0];
+  if (longest) items.push({ title: "Najdłuższa przerwa", name: longest.name, value: `${longest.longest_break} ${plural(longest.longest_break, "okres", "okresy", "okresów")}`, reliable: true });
+  $("#habitInsights").innerHTML = items.length ? items.map((item) => `
+    <div class="insight-item"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.name)}${item.reliable ? "" : " · mała próba"}</small></span><span class="insight-value ${String(item.value).startsWith("+") ? "positive" : String(item.value).startsWith("-") ? "negative" : ""}">${escapeHtml(item.value)}</span></div>`).join("") : "<p class='hint'>Potrzeba danych z co najmniej dwóch okresów porównawczych.</p>";
+}
+
+function renderToday(today) {
+  if (!today?.pending) {
+    $("#todayVerdict").textContent = "Brak danych o dziś";
+    $("#todayMeta").textContent = "Odśwież stronę — backend i interfejs mogą być z różnych wersji.";
+    return;
+  }
+  const left = today.pending.length;
+  $("#todayVerdict").textContent = !today.total
+    ? "Brak nawyków na dziś"
+    : left === 0
+      ? "Komplet — wszystko odhaczone"
+      : `${left} ${plural(left, "cel jest", "cele są", "celów jest")} w trakcie`;
+  $("#todayMeta").textContent = today.total ? `${today.done} z ${today.total} wykonane · ${today.date}` : "";
+  $("#todayList").innerHTML = left ? today.pending.map((item) => {
+    const progress = progressText(item);
+    const streak = item.streak ? ` · seria ${item.streak} ${item.unit === "week" ? "tyg." : "dni"}` : "";
+    return `<div class="today-row pending"><span><strong>${escapeHtml(item.name)}</strong><small>${progress}</small></span><span class="stake">W trakcie${streak}</span></div>`;
+  }).join("") : `<p class="today-clear">${today.total ? "Wszystkie dzisiejsze cele zaliczone." : "Eksport nie zawiera nawyków zaplanowanych na dziś."}</p>`;
+}
+
+function progressText(item) {
+  const unit = escapeHtml(item.value_unit || "");
+  if (item.type === "Breaking" && item.goal === 0) return item.quantity === 0 ? "cel zachowany do tej pory" : `${fmtNumber.format(item.quantity)} ${unit} · cel przekroczony`;
+  if (item.type === "Breaking") return `${fmtNumber.format(item.quantity)} / ${fmtNumber.format(item.goal)} ${unit} · pozostało ${fmtNumber.format(Math.max(0, item.goal - item.quantity))} ${unit}`;
+  const percent = item.goal > 0 ? Math.min(100, item.quantity / item.goal * 100) : 0;
+  return `${fmtNumber.format(item.quantity)} / ${fmtNumber.format(item.goal)} ${unit} · ${fmtNumber.format(percent)}%`;
+}
+
+function renderRecords(items) {
+  const useful = items.filter((item) => item.personal_best && (item.personal_best.unit || item.average_ratio !== null || item.zero_goal_successes !== null));
+  $("#recordsGrid").innerHTML = useful.length ? useful.map((item) => {
+    const record = item.personal_best;
+    const targetText = item.average_ratio !== null
+      ? `Średnio ${fmtNumber.format(item.average_ratio)}% celu · margines ${signed(item.average_margin, ` ${record.unit || ""}`)}`
+      : `${item.zero_goal_successes} okresów bez naruszenia · ${item.zero_goal_violations} naruszeń`;
+    return `<article class="record-card"><span>${escapeHtml(item.name)}</span><strong>${fmtNumber.format(record.value)} ${escapeHtml(record.unit)}</strong><small>Rekord: ${record.date}<br>${escapeHtml(targetText)}</small></article>`;
+  }).join("") : "<p class='hint'>Brak wartości ilościowych w wybranym okresie.</p>";
+}
+
+function renderQuality(quality) {
+  const latest = quality.latest_import;
+  const warning = quality.coverage_warning;
+  $("#qualitySummary").innerHTML = `<div class="quality-callout ${warning ? "" : "quality-good"}">${warning || "Kompletność snapshotu nie zgłasza ostrzeżeń."}<br>${latest ? `Ostatni import: ${new Date(latest.imported_at).toLocaleString("pl-PL")} · ${latest.rows_count} rekordów` : "Brak poprawnego importu"}</div>`;
+  $("#qualityList").innerHTML = quality.habits.map((item) => `
+    <div class="quality-row"><strong>${escapeHtml(item.name)}</strong><span>${fmtNumber.format(item.coverage)}% pokrycia · ${item.gaps} luk<br>${item.first} — ${item.last}</span></div>`).join("");
+}
+
+function renderTrend(points) {
+  const canvas = $("#trendChart");
+  $("#trendEmpty").classList.toggle("hidden", points.length > 0);
+  canvas.classList.toggle("hidden", points.length === 0);
+  if (!points.length) return;
+  requestAnimationFrame(() => {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, rect.width * dpr); canvas.height = Math.max(1, rect.height * dpr);
+    const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+    const w = rect.width, h = rect.height, left = 34, right = 14, top = 15, bottom = 24;
+    const theme = getComputedStyle(document.documentElement), token = (name) => theme.getPropertyValue(name).trim();
+    const narrow = w < 520; // na telefonie surowy wynik i kropki to sama gęstwina, zostają średnie
+    const step = Math.max(1, Math.ceil(points.length / (w * 1.5))); // najwyżej ~1,5 punktu na piksel
+    const data = step > 1 ? points.filter((p, i) => i % step === 0) : points;
+    const x = (i) => left + (data.length <= 1 ? (w-left-right)/2 : i/(data.length-1)*(w-left-right));
+    const y = (v) => top + (100-v)/100*(h-top-bottom);
+    ctx.font = "9px sans-serif"; ctx.fillStyle = token("--muted"); ctx.strokeStyle = token("--line"); ctx.lineWidth = 1;
+    [0, 25, 50, 75, 100].forEach((v) => { ctx.beginPath(); ctx.moveTo(left, y(v)); ctx.lineTo(w-right, y(v)); ctx.stroke(); ctx.fillText(`${v}%`, 4, y(v)+3); });
+    const line = (key, color, width) => { ctx.beginPath(); data.forEach((p, i) => i ? ctx.lineTo(x(i), y(p[key])) : ctx.moveTo(x(i), y(p[key]))); ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = "round"; ctx.stroke(); };
+    if (!narrow) line("rate", token("--dot-raw"), 1);
+    line("avg30", token("--orange"), 2); line("avg7", token("--green"), 2.5);
+    if (!narrow) data.forEach((p, i) => { ctx.beginPath(); ctx.arc(x(i), y(p.rate), 2.5, 0, Math.PI*2); ctx.fillStyle = token("--green"); ctx.fill(); });
+    ctx.fillStyle = token("--muted"); ctx.fillText(data[0].date, left, h-5); if (data.length > 1) { const label = data.at(-1).date; ctx.fillText(label, w-right-ctx.measureText(label).width, h-5); }
+  });
+}
+
+function startOfWeek(d) {
+  const result = new Date(d);
+  result.setDate(result.getDate() - ((result.getDay() + 6) % 7));
+  return result;
+}
+
+function renderHeatmap(values) {
+  const container = $("#heatmap");
+  const labels = $("#monthLabels");
+  container.innerHTML = "";
+  labels.innerHTML = "";
+  if (!state.start || !state.end) return;
+  const lookup = new Map(values.map((item) => [item.date, item]));
+  const actualStart = parseDate(state.start);
+  const actualEnd = parseDate(state.end);
+  const gridStart = startOfWeek(actualStart);
+  const gridEnd = new Date(startOfWeek(actualEnd));
+  gridEnd.setDate(gridEnd.getDate() + 6);
+  const totalDays = Math.round((gridEnd - gridStart) / 86400000) + 1;
+  const weeks = Math.ceil(totalDays / 7);
+  container.style.gridTemplateColumns = `repeat(${weeks}, 13px)`;
+
+  let lastMonth = -1;
+  for (let i = 0; i < totalDays; i++) {
+    const day = new Date(gridStart);
+    day.setDate(day.getDate() + i);
+    const dayIso = iso(day);
+    const item = lookup.get(dayIso);
+    const rate = item?.rate ?? 0;
+    const level = rate === 0 ? 0 : rate < 40 ? 1 : rate < 70 ? 2 : rate < 100 ? 3 : 4;
+    const cell = document.createElement("button");
+    cell.className = `heat-cell${day < actualStart || day > actualEnd ? " outside" : ""}${item?.in_progress ? " in-progress" : ""}`;
+    cell.dataset.level = level;
+    cell.type = "button";
+    cell.title = item
+      ? `${dayIso}: ${item.done}/${item.total} wykonane${item.in_progress ? ` · ${item.in_progress} w trakcie` : ""} (${item.rate}%)`
+      : `${dayIso}: brak danych`;
+    cell.setAttribute("aria-label", cell.title);
+    container.append(cell);
+  }
+
+  for (let week = 0; week < weeks; week++) {
+    const day = new Date(gridStart);
+    day.setDate(day.getDate() + week * 7);
+    const label = document.createElement("span");
+    label.style.width = "17px";
+    if (day.getMonth() !== lastMonth) {
+      label.textContent = months[day.getMonth()];
+      lastMonth = day.getMonth();
+    }
+    labels.append(label);
+  }
+  labels.style.width = `${weeks * 17 + 30}px`;
+  $("#heatmapCaption").textContent = `${values.length} dni z danymi · kolor pokazuje udział wykonanych nawyków dziennych`;
+}
+
+function renderHabits(habits) {
+  const body = $("#habitRows");
+  $("#emptyState").classList.toggle("hidden", habits.length > 0);
+  body.innerHTML = habits.map((habit) => {
+    const unit = habit.streak_unit === "week" ? "tyg." : "dni";
+    const average = habit.unit ? `${fmtNumber.format(habit.average)} ${escapeHtml(habit.unit)}` : fmtNumber.format(habit.average);
+    const hasRate = habit.rate !== null;
+    return `<tr>
+      <td class="habit-cell"><div class="habit-name"><span class="habit-dot">${escapeHtml(habit.name[0] || "H")}</span><span><strong>${escapeHtml(habit.name)}</strong><small>${escapeHtml(habit.list || habit.type)} · ${escapeHtml(habit.period)}</small></span></div></td>
+      <td class="rate-cell"><div class="rate-top"><strong>${hasRate ? `${fmtNumber.format(habit.rate)}%` : "—"}</strong><span>${hasRate ? (habit.rate >= 80 ? "dobry rytm" : "do poprawy") : "brak zamkniętych"}</span></div><div class="progress"><i style="width:${habit.rate || 0}%"></i></div></td>
+      <td class="positive" data-label="Wykonane">${habit.done}</td><td class="${habit.missed ? "negative" : ""}" data-label="Niewykonane">${habit.missed}</td>
+      <td class="pending-count" data-label="W trakcie">${habit.in_progress || "—"}</td>
+      <td data-label="Streak"><strong>${habit.current_streak}</strong> ${unit}<br><small>rekord ${habit.longest_streak}</small></td>
+      <td data-label="Średnia">${average}</td>
+      <td><button class="row-open" data-habit="${encodeURIComponent(habit.name)}" aria-label="Otwórz ${escapeHtml(habit.name)}">›</button></td>
+    </tr>`;
+  }).join("");
+  $$(".row-open").forEach((button) => button.addEventListener("click", () => openDetail(decodeURIComponent(button.dataset.habit))));
+}
+
+async function openDetail(name) {
+  try {
+    const detail = await api(`/api/habits/${encodeURIComponent(name)}?${queryString(false)}`);
+    const unit = detail.streak_unit === "week" ? "tyg." : "dni";
+    $("#detailContent").innerHTML = `
+      <div class="detail-head"><p class="eyebrow">${escapeHtml(detail.list || detail.type)} · ${escapeHtml(detail.period)}</p><h2>${escapeHtml(detail.name)}</h2><p class="dialog-intro">Cel: ${fmtNumber.format(detail.goal)} ${escapeHtml(detail.unit)} · ${escapeHtml(detail.type)}</p></div>
+      <div class="detail-kpis">
+        <div class="detail-kpi"><span>Skuteczność</span><strong>${detail.rate === null ? "—" : `${fmtNumber.format(detail.rate)}%`}</strong></div>
+        <div class="detail-kpi"><span>W trakcie</span><strong>${detail.in_progress}</strong></div>
+        <div class="detail-kpi"><span>Aktualny streak</span><strong>${detail.current_streak} ${unit}</strong></div>
+        <div class="detail-kpi"><span>Średnia</span><strong>${fmtNumber.format(detail.average)} ${escapeHtml(detail.unit)}</strong></div>
+      </div>
+      <div class="chart-wrap"><p class="chart-title">Wartość w czasie</p><canvas id="detailChart"></canvas></div>`;
+    $("#detailDialog").showModal();
+    requestAnimationFrame(() => drawChart(detail));
+  } catch (error) { toast(error.message, true); }
+}
+
+function drawChart(detail) {
+  const canvas = $("#detailChart");
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, rect.width * dpr);
+  canvas.height = Math.max(1, rect.height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const w = rect.width, h = rect.height, p = 26;
+  const theme = getComputedStyle(document.documentElement), token = (name) => theme.getPropertyValue(name).trim();
+  const values = detail.records.map((r) => r.quantity);
+  const max = Math.max(detail.goal, ...values, 1) * 1.12;
+  const x = (i) => p + (values.length <= 1 ? (w - p * 2) / 2 : i / (values.length - 1) * (w - p * 2));
+  const y = (v) => h - p - v / max * (h - p * 2);
+  ctx.strokeStyle = token("--line"); ctx.lineWidth = 1;
+  [0, .5, 1].forEach((r) => { ctx.beginPath(); ctx.moveTo(p, p + r * (h - p * 2)); ctx.lineTo(w - p, p + r * (h - p * 2)); ctx.stroke(); });
+  ctx.setLineDash([5, 5]); ctx.strokeStyle = token("--orange"); ctx.beginPath(); ctx.moveTo(p, y(detail.goal)); ctx.lineTo(w - p, y(detail.goal)); ctx.stroke(); ctx.setLineDash([]);
+  if (values.length) {
+    ctx.strokeStyle = token("--green"); ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.beginPath();
+    values.forEach((v, i) => i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))); ctx.stroke();
+    const dots = values.length <= (w - p * 2) / 4; // przy gęstych danych same linie czytają się lepiej
+    if (dots) values.forEach((v, i) => { ctx.beginPath(); ctx.fillStyle = detail.records[i].state === "complete" ? token("--green") : detail.records[i].state === "in_progress" ? token("--pending") : token("--red"); ctx.arc(x(i), y(v), 3, 0, Math.PI * 2); ctx.fill(); });
+  }
+  ctx.fillStyle = token("--muted"); ctx.font = "10px sans-serif"; ctx.fillText(`cel ${fmtNumber.format(detail.goal)}`, p + 4, Math.max(10, y(detail.goal) - 6));
+}
+
+async function importFile(file) {
+  if (!file) return;
+  const buttons = [$("#syncButton"), $("#dialogSyncButton")].filter(Boolean);
+  buttons.forEach((button) => button.disabled = true);
+  $("#syncState").innerHTML = "<i></i> Importuję…";
+  const form = new FormData(); form.append("file", file);
+  try {
+    const result = await api("/api/import", { method: "POST", body: form });
+    toast(`Zaimportowano ${result.rows} rekordów z ${result.habits} nawyków.`);
+    await load(true);
+    if ($("#settingsDialog").open) await loadImportSettings();
+  } catch (error) {
+    $("#syncState").textContent = "Błąd importu";
+    toast(error.message, true);
+  } finally {
+    buttons.forEach((button) => button.disabled = false);
+    $("#fileInput").value = "";
+  }
 }
 
 function renderBackupStatus(status) {
   const latest = status.latest;
-  $("#backupStatus").innerHTML = latest ? `<strong>${status.healthy ? "Backup sprawdzony" : "Backup wymaga uwagi"}</strong><small>${escapeHtml(latest.file)} · ${latest.size_kb} KB · codziennie ${escapeHtml(status.backup_time)} · retencja ${status.keep} kopii</small>` : `<strong>Brak backupu</strong><small>Pierwszy powstanie po ${escapeHtml(status.backup_time)}, gdy baza będzie zawierała dane.</small>`;
+  $("#backupStatus").innerHTML = latest
+    ? `<strong>${status.healthy ? "Backup sprawdzony" : "Backup wymaga uwagi"}</strong><small>${escapeHtml(latest.file)} · ${latest.size_kb} KB · codziennie ${escapeHtml(status.backup_time)} · retencja ${status.keep}</small>`
+    : `<strong>Brak backupu</strong><small>Pierwszy snapshot powstanie po ${escapeHtml(status.backup_time)}, gdy baza będzie zawierała dane.</small>`;
 }
+
 function historyQuery() {
   const params = new URLSearchParams({ page: historyState.page, per_page: historyState.perPage });
   if (historyState.dateFrom) params.set("date_from", historyState.dateFrom);
   if (historyState.dateTo) params.set("date_to", historyState.dateTo);
   return params.toString();
 }
+
 function renderHistoryPagination(pagination) {
-  historyState.page = pagination.page; // serwer przycina stronę do zakresu, np. po usunięciu backupów
-  $("#historyCount").textContent = `${pagination.total} wpisów`;
+  $("#historyCount").textContent = `${pagination.total} ${plural(pagination.total, "wpis", "wpisy", "wpisów")}`;
   $("#historyPage").textContent = `Strona ${pagination.page} z ${pagination.pages}`;
-  $("#historyPrevious").disabled = !pagination.has_previous; $("#historyNext").disabled = !pagination.has_next;
+  $("#historyPrevious").disabled = !pagination.has_previous;
+  $("#historyNext").disabled = !pagination.has_next;
 }
+
 async function loadHistory() {
   const backups = historyState.tab === "backups";
   const result = await api(`/${backups ? "api/backups" : "api/imports"}?${historyQuery()}`);
   const items = backups ? result.backups : result.items;
   if (backups) renderBackupStatus(result);
-  $("#historyList").innerHTML = items.length ? items.map((item) => backups ? `<div class="backup-row"><div><strong>${item.kind === "pre_restore" ? "Kopia przed przywróceniem" : item.kind === "pre_import" ? "Kopia przed importem" : item.kind === "manual" ? "Backup ręczny" : "Backup automatyczny"}</strong><small>${new Date(item.modified).toLocaleString("pl-PL")} · ${item.size_kb} KB</small></div><div><a href="/api/backups/${encodeURIComponent(item.file)}/download">Pobierz</a><button data-restore="${escapeHtml(item.file)}">Przywróć</button></div></div>` : `<div class="import-row"><div><strong>${item.status === "failed" ? (item.source === "webhook" ? "Webhook odrzucony" : "Import odrzucony") : item.source === "webhook" ? "Webhook odebrany" : "Import z interfejsu"}</strong><small>${new Date(item.imported_at).toLocaleString("pl-PL")} · ${escapeHtml(item.filename)}</small></div><div><strong>${item.status === "failed" ? escapeHtml(item.error) : `${item.rows_count} rekordów · ${item.changed ? "dane zmienione" : "bez zmian"}`}</strong><small>${item.status === "failed" ? "Poprzednie dane pozostały bez zmian" : `${escapeHtml(item.min_date)}–${escapeHtml(item.max_date)}`}</small></div></div>`).join("") : "<p class='latest-import'>Brak wpisów w wybranym zakresie.</p>";
+  $("#historyList").innerHTML = items.length ? items.map((item) => backups ? `
+    <div class="backup-row"><span><strong>${item.kind === "pre_restore" ? "Kopia przed przywróceniem" : item.kind === "manual" ? "Backup ręczny" : "Backup automatyczny"}</strong><small>${new Date(item.modified).toLocaleString("pl-PL")} · ${item.size_kb} KB</small></span><span><a href="/api/backups/${encodeURIComponent(item.file)}/download">Pobierz</a><button data-restore="${escapeHtml(item.file)}">Przywróć</button></span></div>` : `
+    <div class="import-row"><span><strong>${item.status === "success" ? (item.source === "webhook" ? "Webhook" : "Import pliku") : "Błąd importu"}</strong><br>${new Date(item.imported_at).toLocaleString("pl-PL")} · ${escapeHtml(item.filename)}</span><span>${item.status === "success" ? `${item.rows_count} rekordów · ${item.min_date} — ${item.max_date}` : escapeHtml(item.error || "Nieznany błąd")}</span></div>`).join("") : "<p class='hint'>Brak wpisów w wybranym zakresie.</p>";
   renderHistoryPagination(result.pagination);
   $$('[data-restore]').forEach((button) => button.addEventListener("click", () => restoreServerBackup(button.dataset.restore)));
 }
+
 async function loadBackupSummary() {
   renderBackupStatus(await api("/api/backups?page=1&per_page=1"));
 }
 
 async function restoreServerBackup(filename) {
-  const confirmation = prompt(`Przywrócenie zastąpi bieżące dane. Wpisz PRZYWRÓĆ, aby użyć kopii:\n${filename}`);
+  const confirmation = prompt(`Przywrócenie zastąpi lokalny snapshot Awesome Habits. Wpisz PRZYWRÓĆ, aby użyć kopii:\n${filename}`);
   if (confirmation !== "PRZYWRÓĆ") return;
   try {
-    const result = await api(`/api/backups/${encodeURIComponent(filename)}/restore`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmation }) });
-    toast(`Dane przywrócone. Kopia bezpieczeństwa: ${result.safety_backup}`); await refreshAfterRestore();
+    const result = await api(`/api/backups/${encodeURIComponent(filename)}/restore`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmation }),
+    });
+    toast(`Baza przywrócona. Kopia bezpieczeństwa: ${result.safety_backup}`);
+    await Promise.all([load(true), loadImportSettings()]);
   } catch (error) { toast(error.message, true); }
 }
 
 async function restoreUploadedBackup(file) {
   if (!file) return;
-  const confirmation = prompt("Przywrócenie zastąpi bieżące dane. Wpisz PRZYWRÓĆ, aby kontynuować.");
+  const confirmation = prompt("Przywrócenie zastąpi lokalny snapshot Awesome Habits. Wpisz PRZYWRÓĆ, aby kontynuować.");
   if (confirmation !== "PRZYWRÓĆ") { $("#backupFileInput").value = ""; return; }
   const form = new FormData(); form.append("file", file);
   try {
     const result = await api(`/api/backups/restore-upload?confirmation=${encodeURIComponent(confirmation)}`, { method: "POST", body: form });
-    toast(`Dane przywrócone z pliku. Kopia bezpieczeństwa: ${result.safety_backup}`); await refreshAfterRestore();
+    toast(`Baza przywrócona z pliku. Kopia bezpieczeństwa: ${result.safety_backup}`);
+    await Promise.all([load(true), loadImportSettings()]);
   } catch (error) { toast(error.message, true); }
   finally { $("#backupFileInput").value = ""; }
 }
 
-async function refreshAfterRestore() {
-  state.bounds = null; state.start = null; state.end = null;
-  await Promise.all([loadConfig(), loadBackupSummary(), loadHistory(), loadDashboard(true)]);
-}
-function renderLatest(event, latestSuccessful) {
-  $("#latestImport").innerHTML = event ? event.status === "failed"
-    ? `<strong>${event.source === "webhook" ? "Ostatni webhook odrzucony" : "Ostatni import odrzucony"}</strong><br>${new Date(event.imported_at).toLocaleString("pl-PL")} · ${escapeHtml(event.error)}`
-    : `<strong>${event.source === "webhook" ? "Ostatni webhook" : "Ostatni import"}</strong><br>${escapeHtml(event.filename)} · ${event.rows_count} rekordów<br>${new Date(event.imported_at).toLocaleString("pl-PL")}`
-    : "Nie zaimportowano jeszcze żadnego pliku.";
-  const dataState = $("#dataState"); dataState.classList.toggle("ready", Boolean(latestSuccessful));
-  dataState.lastChild.textContent = latestSuccessful ? ` ${latestSuccessful.rows_count} rekordów` : " Brak danych";
-}
-
-async function importFile(file) {
-  if (!file) return;
-  const form = new FormData(); form.append("file", file);
-  $("#importButton").disabled = true; $("#importButton").textContent = "Importuję…";
+async function loadImportSettings() {
   try {
-    const result = await api("/api/import", { method: "POST", body: form });
-    toast(`Zaimportowano ${result.rows} rekordów z ${result.habits} nawyków.`);
-    await Promise.all([loadConfig(), loadBackupSummary(), loadHistory()]); state.bounds = null; await loadDashboard(true);
-  } catch (error) { toast(error.message, true); }
-  finally { $("#importButton").disabled = false; $("#importButton").textContent = "Importuj CSV"; $("#fileInput").value = ""; }
-}
-
-async function loadDashboard(initial = false) {
-  try {
-    const data = await api(`/api/dashboard?${query()}`);
-    if (!data.bounds.min_date) {
-      $("#emptyWelcome").classList.remove("hidden"); $("#dashboard").classList.add("hidden"); return;
-    }
-    $("#emptyWelcome").classList.add("hidden"); $("#dashboard").classList.remove("hidden");
-    if (!state.bounds || initial) {
-      state.bounds = data.bounds;
-      if (!state.start || initial) {
-        const end = parseDate(data.bounds.max_date); const start = new Date(end); start.setFullYear(start.getFullYear() - 1);
-        state.start = iso(start) < data.bounds.min_date ? data.bounds.min_date : iso(start); state.end = data.bounds.max_date;
-        if (initial) return loadDashboard(false);
-      }
-    }
-    render(data);
+    const [config] = await Promise.all([api("/api/config"), loadBackupSummary(), loadHistory()]);
+    const latest = config.latest_import;
+    $("#webhookUrl").textContent = config.webhook_url;
+    $("#connectionStatus").className = `quality-callout ${latest?.status === "success" ? "quality-good" : ""}`;
+    $("#connectionStatus").textContent = latest?.status === "success"
+      ? `Ostatni import: ${new Date(latest.imported_at).toLocaleString("pl-PL")} · ${latest.rows_count} rekordów.`
+      : latest?.status === "failed"
+        ? `Ostatni import nie powiódł się: ${latest.error || "nieznany błąd"}`
+        : "Brak importów. Wybierz pełny eksport CSV z Awesome Habits.";
   } catch (error) { toast(error.message, true); }
 }
 
-function render(data) {
-  const summary = data.summary;
-  $("#metricRate").textContent = summary.rate == null ? "—" : `${fmt.format(summary.rate)}%`; $("#metricDone").textContent = fmt.format(summary.done);
-  $("#metricMissed").textContent = fmt.format(summary.missed); $("#metricProgress").textContent = fmt.format(summary.in_progress); $("#metricPerfect").textContent = fmt.format(summary.perfect_days);
-  $("#metricRateSub").textContent = `${summary.resolved} zakończonych okresów`;
-  $("#dataRange").textContent = `${state.start || data.bounds.min_date} — ${state.end || data.bounds.max_date} · ${summary.records} rekordów`;
-  populateSelect("#habitFilter", data.options.habits, "Wszystkie nawyki"); populateSelect("#listFilter", data.options.lists, "Wszystkie listy"); populateSelect("#periodFilter", data.options.periods, "Dzienny i tygodniowy");
-  $("#habitFilter").value = state.habit; $("#listFilter").value = state.list; $("#periodFilter").value = state.period;
-  renderToday(data.analytics.today); renderHeatmap(data.heatmap); renderTrend(data.analytics.trends.daily);
-  renderHabits(data.habits); renderWeekdays(data.analytics.weekdays); renderMonthly(data.analytics.monthly); renderRegularity(data.analytics.regularity);
-  renderInsightStrip(data.analytics); renderLists(data.analytics.lists); renderBehaviors(data.analytics); renderRecords(data.analytics.records);
-}
+$$('[data-close]').forEach((button) => button.addEventListener("click", () => $(`#${button.dataset.close}`).close()));
+$$("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); }));
+$("#syncButton").addEventListener("click", () => $("#fileInput").click());
+$("#dialogSyncButton").addEventListener("click", () => $("#fileInput").click());
+$("#fileInput").addEventListener("change", (event) => importFile(event.target.files[0]));
+$("#copyWebhook").addEventListener("click", async () => { const copied = await copyText($("#webhookUrl").textContent); toast(copied ? "Adres webhooka skopiowany." : "Nie udało się skopiować adresu.", !copied); });
+$("#settingsButton").addEventListener("click", async () => { await loadImportSettings(); $("#settingsDialog").showModal(); });
+$("#backupNow").addEventListener("click", async () => {
+  try {
+    const result = await api("/api/backup", { method: "POST" });
+    toast(`Utworzono backup ${result.backup}`);
+    historyState.tab = "backups"; historyState.page = 1;
+    $$('[data-history-tab]').forEach((button) => button.classList.toggle("active", button.dataset.historyTab === "backups"));
+    await Promise.all([loadBackupSummary(), loadHistory()]);
+  } catch (error) { toast(error.message, true); }
+});
+$("#restoreUpload").addEventListener("click", () => $("#backupFileInput").click());
+$("#backupFileInput").addEventListener("change", (event) => restoreUploadedBackup(event.target.files[0]));
+$$('[data-history-tab]').forEach((button) => button.addEventListener("click", async () => {
+  historyState.tab = button.dataset.historyTab; historyState.page = 1;
+  $$('[data-history-tab]').forEach((item) => item.classList.toggle("active", item === button));
+  await loadHistory();
+}));
+$("#historyApply").addEventListener("click", async () => { historyState.dateFrom = $("#historyFrom").value; historyState.dateTo = $("#historyTo").value; historyState.page = 1; await loadHistory(); });
+$("#historyClear").addEventListener("click", async () => { $("#historyFrom").value = ""; $("#historyTo").value = ""; historyState.dateFrom = ""; historyState.dateTo = ""; historyState.page = 1; await loadHistory(); });
+$("#historyPrevious").addEventListener("click", async () => { if (historyState.page > 1) { historyState.page -= 1; await loadHistory(); } });
+$("#historyNext").addEventListener("click", async () => { historyState.page += 1; await loadHistory(); });
 
-function signed(value, suffix = " pp") {
-  if (value == null) return "—";
-  return `${value > 0 ? "+" : ""}${fmt.format(value)}${suffix}`;
-}
-function toneClass(value) { return value > 0 ? "positive" : value < 0 ? "negative" : ""; }
-function plural(value, one, few, many) {
-  const count = Math.round(value);
-  if (count === 1) return one;
-  return [2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100) ? few : many;
-}
-
-function renderInsightStrip(analytics) {
-  const comparison = analytics.comparison;
-  $("#comparisonValue").textContent = signed(comparison.delta);
-  $("#comparisonValue").className = toneClass(comparison.delta);
-  $("#comparisonMeta").textContent = comparison.previous_rate == null
-    ? "Brak danych w poprzednim okresie"
-    : `${fmt.format(comparison.previous_rate)}% poprzednio · ${comparison.previous_records} rekordów`;
-  $("#momentumValue").textContent = signed(analytics.momentum);
-  $("#momentumValue").className = toneClass(analytics.momentum);
-  $("#bestWeekday").textContent = analytics.best_weekday ? `${weekdays[analytics.best_weekday.day]} · ${fmt.format(analytics.best_weekday.rate)}%` : "—";
-  $("#worstWeekday").textContent = analytics.worst_weekday ? `Najsłabiej: ${weekdays[analytics.worst_weekday.day]} · ${fmt.format(analytics.worst_weekday.rate)}%` : "Za mało danych";
-  const sd = analytics.regularity.weekly_stddev;
-  $("#regularityValue").textContent = sd == null ? "Za mało danych" : sd <= 5 ? "Bardzo stabilnie" : sd <= 15 ? "Stabilnie" : "Nierówny rytm";
-  $("#regularityValue").title = sd == null ? "Potrzebne co najmniej dwa tygodnie" : `Odchylenie tygodniowe: ${sd} pp`;
-}
-
-function renderBars(selector, items) {
-  $(selector).innerHTML = items.length
-    ? items.map((item) => `<div class="bar-row"><span>${escapeHtml(item.name)}</span><div class="bar-track"><i style="width:${item.rate || 0}%"></i></div><strong>${item.rate == null ? "—" : `${fmt.format(item.rate)}%`}</strong></div>`).join("")
-    : "<p class='empty'>Brak danych.</p>";
-}
-function renderLists(lists) {
-  renderBars("#listBars", lists.map((item) => ({ name: item.name, rate: item.rate })));
-}
-
-function renderBehaviors(analytics) {
-  const items = [];
-  if (analytics.most_improved) items.push({ title: "Największa poprawa", name: analytics.most_improved.name, value: signed(analytics.most_improved.delta), reliable: analytics.most_improved.reliable });
-  if (analytics.most_regressed) items.push({ title: "Największy spadek", name: analytics.most_regressed.name, value: signed(analytics.most_regressed.delta), reliable: analytics.most_regressed.reliable });
-  const fastest = analytics.behaviors.filter((item) => item.median_recovery != null).sort((a, b) => a.median_recovery - b.median_recovery)[0];
-  if (fastest) items.push({ title: "Najszybszy powrót", name: fastest.name, value: `${fmt.format(fastest.median_recovery)} ${plural(fastest.median_recovery, "okres", "okresy", "okresów")}`, reliable: fastest.recoveries >= 3 });
-  const longest = analytics.behaviors[0]; // posortowane malejąco po długości przerwy
-  if (longest?.longest_break) items.push({ title: "Najdłuższa przerwa", name: longest.name, value: `${longest.longest_break} ${plural(longest.longest_break, "okres", "okresy", "okresów")}`, reliable: true });
-  $("#habitInsights").innerHTML = items.length
-    ? items.map((item) => `<div class="insight-item"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.name)}${item.reliable ? "" : " · mała próba"}</small></span><span class="insight-value ${toneClass(String(item.value).startsWith("+") ? 1 : String(item.value).startsWith("-") ? -1 : 0)}">${escapeHtml(item.value)}</span></div>`).join("")
-    : "<p class='empty'>Potrzeba danych z dwóch kolejnych okresów.</p>";
-}
-
-function renderRecords(items) {
-  const useful = items.filter((item) => item.personal_best && (item.personal_best.unit || item.average_ratio != null || item.zero_goal_successes != null));
-  $("#recordsGrid").innerHTML = useful.length ? useful.map((item) => {
-    const record = item.personal_best;
-    const detail = item.average_ratio != null
-      ? `Średnio ${fmt.format(item.average_ratio)}% celu · margines ${signed(item.average_margin, ` ${record.unit || ""}`)}`
-      : `${item.zero_goal_successes} okresów bez naruszenia · ${item.zero_goal_violations} naruszeń`;
-    return `<article class="record-card"><span>${escapeHtml(item.name)}</span><strong>${fmt.format(record.value)} ${escapeHtml(record.unit)}</strong><small>Rekord: ${escapeHtml(record.date)}<br>${escapeHtml(detail)}</small></article>`;
-  }).join("") : "<p class='empty'>Brak wartości ilościowych w wybranym okresie.</p>";
-}
-
-function renderToday(today) {
-  $("#todayMeta").textContent = today.total ? `${today.done}/${today.total} zakończone` : "Brak bieżącego okresu w eksporcie";
-  $("#todayVerdict").textContent = !today.total ? "Czekamy na dane" : !today.pending.length ? "Wszystko pod kontrolą" : `${today.pending.length} ${today.pending.length === 1 ? "cel czeka" : "cele czekają"}`;
-  $("#todayList").innerHTML = today.pending.length ? today.pending.map((item) => `<div class="today-row"><div><strong>${escapeHtml(item.name)}</strong><small>${item.period === "Weekly" ? "Cel tygodniowy" : "Cel dzienny"} · ${progressText(item)}</small></div><span class="stake">W trakcie${item.streak ? ` · streak ${item.streak} ${item.unit === "week" ? "tyg." : "dni"}` : ""}</span></div>`).join("") : `<p class="today-clear">${today.total ? "Świetna robota — wszystkie widoczne cele są wykonane." : "Nowy eksport uzupełni ten panel."}</p>`;
-}
-
-function progressText(item) {
-  const unit = escapeHtml(item.value_unit || "");
-  if (item.type === "Breaking" && item.goal === 0) return item.quantity === 0 ? "cel zachowany do tej pory" : `${fmt.format(item.quantity)} ${unit} · cel przekroczony`;
-  if (item.type === "Breaking") return `${fmt.format(item.quantity)} / ${fmt.format(item.goal)} ${unit} · pozostało ${fmt.format(Math.max(0, item.goal - item.quantity))} ${unit}`;
-  const percent = item.goal > 0 ? Math.min(100, item.quantity / item.goal * 100) : 0;
-  return `${fmt.format(item.quantity)} / ${fmt.format(item.goal)} ${unit} · ${fmt.format(percent)}%`;
-}
-
-function renderHabits(habits) {
-  $("#emptyState").classList.toggle("hidden", habits.length > 0);
-  $("#habitRows").innerHTML = habits.map((habit) => { const hasRate = habit.rate != null; return `<tr><td class="habit-cell"><div class="habit-name"><span class="habit-dot">${escapeHtml(habit.name[0])}</span><span><strong>${escapeHtml(habit.name)}</strong><small>${escapeHtml(habit.list || habit.type)} · ${escapeHtml(habit.period)}</small></span></div></td><td class="rate-cell"><div class="rate-top"><strong>${hasRate ? `${fmt.format(habit.rate)}%` : "—"}</strong><span>${hasRate ? (habit.rate >= 80 ? "dobry rytm" : "do poprawy") : "brak zamkniętych"}</span></div><div class="progress"><i style="width:${hasRate ? habit.rate : 0}%"></i></div></td><td data-label="Wykonane">${habit.done}</td><td data-label="Niewykonane">${habit.missed}</td><td class="pending-count" data-label="W trakcie">${habit.in_progress || "—"}</td><td data-label="Streak">${habit.current_streak} ${habit.streak_unit === "week" ? "tyg." : "dni"}</td><td data-label="Średnia">${fmt.format(habit.average)} ${escapeHtml(habit.unit)}</td><td><button class="row-open" data-habit="${escapeHtml(habit.name)}" data-period="${escapeHtml(habit.period)}" aria-label="Szczegóły">›</button></td></tr>`; }).join("");
-  $$(".row-open").forEach((button) => button.addEventListener("click", () => showDetail(button.dataset.habit, button.dataset.period)));
-}
-
-function startOfWeek(day) { const result = new Date(day); result.setDate(result.getDate() - ((result.getDay() + 6) % 7)); return result; }
-function renderHeatmap(values) {
-  const container = $("#heatmap"), labels = $("#monthLabels"); container.innerHTML = ""; labels.innerHTML = "";
-  if (!state.start || !state.end) return;
-  const lookup = new Map(values.map((item) => [item.date, item])); const actualStart = parseDate(state.start), actualEnd = parseDate(state.end);
-  const gridStart = startOfWeek(actualStart), gridEnd = new Date(startOfWeek(actualEnd)); gridEnd.setDate(gridEnd.getDate() + 6);
-  const totalDays = Math.round((gridEnd - gridStart) / 86400000) + 1, weeks = Math.ceil(totalDays / 7); container.style.gridTemplateColumns = `repeat(${weeks},13px)`;
-  for (let i = 0; i < totalDays; i++) {
-    const day = new Date(gridStart); day.setDate(day.getDate() + i); const dayIso = iso(day), item = lookup.get(dayIso), rate = item?.rate || 0;
-    const cell = document.createElement("button"); cell.className = `heat-cell${day < actualStart || day > actualEnd ? " outside" : ""}${item?.in_progress ? " in-progress" : ""}`; cell.dataset.level = rate === 0 ? 0 : rate < 40 ? 1 : rate < 70 ? 2 : rate < 100 ? 3 : 4;
-    cell.title = item ? `${dayIso}: ${item.done}/${item.total} wykonane${item.in_progress ? ` · ${item.in_progress} w trakcie` : ""} (${item.rate}%)` : `${dayIso}: brak danych`; container.append(cell);
+$$('[data-range]').forEach((button) => button.addEventListener("click", async () => {
+  state.range = button.dataset.range;
+  $$('[data-range]').forEach((b) => b.classList.toggle("active", b === button));
+  $("#customRange").classList.toggle("hidden", state.range !== "custom");
+  if (state.range !== "custom") {
+    const range = dateRange(state.range, state.data?.bounds);
+    state.start = range.start; state.end = range.end;
+    await load();
   }
-  let lastMonth = -1;
-  for (let week = 0; week < weeks; week++) { const day = new Date(gridStart); day.setDate(day.getDate() + week * 7); const label = document.createElement("span"); label.style.width = "17px"; if (day.getMonth() !== lastMonth) { label.textContent = months[day.getMonth()]; lastMonth = day.getMonth(); } labels.append(label); }
-  labels.style.width = `${weeks * 17 + 30}px`; $("#heatmapCaption").textContent = `${values.length} dni z danymi · udział wykonanych nawyków dziennych`;
-}
+}));
+
+$("#applyRange").addEventListener("click", () => {
+  state.start = $("#startDate").value; state.end = $("#endDate").value;
+  if (!state.start || !state.end || state.start > state.end) return toast("Wybierz poprawny zakres dat.", true);
+  load();
+});
+
+[["#habitFilter", "habit"], ["#listFilter", "list"], ["#periodFilter", "period"]].forEach(([selector, key]) => {
+  $(selector).addEventListener("change", (event) => { state[key] = event.target.value; load(); });
+});
+$("#clearFilters").addEventListener("click", () => {
+  state.habit = state.list = state.period = "";
+  $("#habitFilter").value = $("#listFilter").value = $("#periodFilter").value = "";
+  load();
+});
+
 // dotyk nie pokazuje title, więc opis komórki trafia do toastu
-$("#heatmap").addEventListener("click", (event) => { const cell = event.target.closest(".heat-cell"); if (cell) toast(cell.title); });
+$("#heatmap").addEventListener("click", (event) => {
+  const cell = event.target.closest(".heat-cell");
+  if (cell) toast(cell.title);
+});
 
-function renderTrend(points) {
-  const canvas = $("#trendChart"), ratio = window.devicePixelRatio || 1, width = canvas.clientWidth, height = canvas.clientHeight;
-  canvas.width = width * ratio; canvas.height = height * ratio; const ctx = canvas.getContext("2d"); ctx.scale(ratio, ratio); ctx.clearRect(0, 0, width, height);
-  const theme = getComputedStyle(document.documentElement), token = (name) => theme.getPropertyValue(name).trim();
-  const pad = { left: 34, right: 12, top: 12, bottom: 25 }, w = width - pad.left - pad.right, h = height - pad.top - pad.bottom;
-  ctx.font = "10px sans-serif"; ctx.fillStyle = token("--muted"); ctx.strokeStyle = token("--line"); ctx.lineWidth = 1;
-  [0, 25, 50, 75, 100].forEach((value) => { const y = pad.top + h - value / 100 * h; ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(width - pad.right, y); ctx.stroke(); ctx.fillText(`${value}%`, 0, y + 3); });
-  if (points.length < 2) return;
-  const narrow = width < 520; // na telefonie surowy wynik dnia to sama gęstwina, zostają średnie
-  const step = Math.max(1, Math.ceil(points.length / (w * 1.5))); // najwyżej ~1,5 punktu na piksel
-  const data = step > 1 ? points.filter((_, index) => index % step === 0) : points;
-  const draw = (key, color, lineWidth) => { ctx.beginPath(); data.forEach((point, i) => { const x = pad.left + i / (data.length - 1) * w, y = pad.top + h - point[key] / 100 * h; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.strokeStyle = color; ctx.lineWidth = lineWidth; ctx.stroke(); };
-  if (!narrow) draw("rate", token("--muted") + "59", 1);
-  draw("avg30", token("--orange"), 2); draw("avg7", token("--green"), 2.5);
-  const ticks = narrow ? 3 : 5;
-  for (let i = 0; i < ticks; i++) {
-    const index = Math.round(i / (ticks - 1) * (data.length - 1)), day = parseDate(data[index].date);
-    ctx.textAlign = i === 0 ? "left" : i === ticks - 1 ? "right" : "center";
-    ctx.fillText(`${months[day.getMonth()]} ${String(day.getFullYear()).slice(2)}`, pad.left + index / (data.length - 1) * w, height - 6);
-  }
-  ctx.textAlign = "left";
-}
-function renderWeekdays(items) { $("#weekdayBars").innerHTML = items.map((item) => `<div class="bar-row"><span>${weekdays[item.day]}</span><div class="bar-track"><i style="width:${item.rate || 0}%"></i></div><strong>${item.rate == null ? "—" : `${fmt.format(item.rate)}%`}</strong></div>`).join(""); }
-function renderMonthly(items) { $("#monthlyGrid").innerHTML = items.map((item) => `<div class="month-card"><span>${escapeHtml(item.month)}</span><strong>${item.rate == null ? "—" : `${fmt.format(item.rate)}%`}</strong><small>${item.perfect_days} idealnych dni · ${item.records} wpisów</small></div>`).join("") || `<p class="empty">Brak danych miesięcznych.</p>`; }
-function renderRegularity(item) { const value = item.weekly_stddev; $("#regularity").innerHTML = `<strong>${value == null ? "—" : fmt.format(value)}</strong><p>${value == null ? "Potrzeba co najmniej dwóch tygodni danych." : `Odchylenie wyników z ${item.weeks} tygodni. Im niżej, tym równiejszy rytm.`}</p>`; }
+// canvas ma stałą szerokość w pikselach, więc obrót telefonu wymaga przerysowania;
+// zmiana samej wysokości (pasek adresu na mobile) nic nie zmienia
+let lastWidth = window.innerWidth;
+const redraw = () => state.data && render(state.data);
+window.addEventListener("resize", () => {
+  if (window.innerWidth === lastWidth) return;
+  lastWidth = window.innerWidth;
+  clearTimeout(window.chartTimer);
+  window.chartTimer = setTimeout(redraw, 150);
+});
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redraw);
 
-async function showDetail(name, period) {
-  try {
-    const params = new URLSearchParams(query()); params.set("period", period);
-    const item = await api(`/api/habits/${encodeURIComponent(name)}?${params}`);
-    $("#detailContent").innerHTML = `<p class="eyebrow">${escapeHtml(item.period)} · ${escapeHtml(item.type)}</p><h2>${escapeHtml(item.name)}</h2><div class="detail-kpis"><div class="detail-kpi"><span>Skuteczność</span><strong>${item.rate == null ? "—" : `${fmt.format(item.rate)}%`}</strong></div><div class="detail-kpi"><span>W trakcie</span><strong>${item.in_progress}</strong></div><div class="detail-kpi"><span>Aktualny streak</span><strong>${item.current_streak}</strong></div><div class="detail-kpi"><span>Średnia</span><strong>${fmt.format(item.average)}</strong></div></div><div class="detail-records">${item.records.slice().reverse().map((r) => `<div class="detail-record ${r.state}"><span>${r.date}</span><strong>${fmt.format(r.quantity)} ${escapeHtml(item.unit)} · ${r.state === "complete" ? "wykonane" : r.state === "in_progress" ? "w trakcie" : "niewykonane"}</strong></div>`).join("")}</div>`;
-    $("#detailDialog").showModal();
-  } catch (error) { toast(error.message, true); }
-}
-
-function wireEvents() {
-  $("#importButton").addEventListener("click", () => $("#fileInput").click()); $$(".import-trigger").forEach((el) => el.addEventListener("click", () => $("#fileInput").click()));
-  $("#fileInput").addEventListener("change", (event) => importFile(event.target.files[0]));
-  const drop = $(".drop-zone"); ["dragenter", "dragover"].forEach((name) => drop.addEventListener(name, (e) => { e.preventDefault(); drop.classList.add("drag"); })); ["dragleave", "drop"].forEach((name) => drop.addEventListener(name, (e) => { e.preventDefault(); drop.classList.remove("drag"); })); drop.addEventListener("drop", (e) => importFile(e.dataTransfer.files[0]));
-  $("#settingsButton").addEventListener("click", () => { $("#settingsDialog").showModal(); Promise.all([loadBackupSummary(), loadHistory()]).catch((error) => toast(error.message, true)); }); $$('[data-close]').forEach((button) => button.addEventListener("click", () => $(`#${button.dataset.close}`).close()));
-  $("#copyWebhook").addEventListener("click", async () => { const copied = await copyText($("#webhookUrl").textContent); toast(copied ? "Adres webhooka skopiowany." : "Nie udało się skopiować. Zaznacz adres i skopiuj ręcznie.", !copied); });
-  $$("[data-range]").forEach((button) => button.addEventListener("click", () => setRange(button.dataset.range)));
-  $("#applyRange").addEventListener("click", () => { state.start = $("#startDate").value; state.end = $("#endDate").value; if (state.start && state.end && state.start <= state.end) loadDashboard(); else toast("Wybierz poprawny zakres dat.", true); });
-  [["#habitFilter", "habit"], ["#listFilter", "list"], ["#periodFilter", "period"]].forEach(([selector, key]) => $(selector).addEventListener("change", (e) => { state[key] = e.target.value; loadDashboard(); }));
-  $("#clearFilters").addEventListener("click", () => { state.habit = state.list = state.period = ""; loadDashboard(); });
-  $("#backupNow").addEventListener("click", async () => { try { const result = await api("/api/backup", { method: "POST" }); toast(`Utworzono backup ${result.backup}`); historyState.tab = "backups"; historyState.page = 1; $$('[data-history-tab]').forEach((button) => button.classList.toggle("active", button.dataset.historyTab === "backups")); await Promise.all([loadBackupSummary(), loadHistory()]); } catch (error) { toast(error.message, true); } });
-  $("#restoreUpload").addEventListener("click", () => $("#backupFileInput").click());
-  $("#backupFileInput").addEventListener("change", (event) => restoreUploadedBackup(event.target.files[0]));
-  $$('[data-history-tab]').forEach((button) => button.addEventListener("click", async () => { historyState.tab = button.dataset.historyTab; historyState.page = 1; $$('[data-history-tab]').forEach((item) => item.classList.toggle("active", item === button)); await loadHistory(); }));
-  $("#historyApply").addEventListener("click", async () => { historyState.dateFrom = $("#historyFrom").value; historyState.dateTo = $("#historyTo").value; historyState.page = 1; await loadHistory(); });
-  $("#historyClear").addEventListener("click", async () => { $("#historyFrom").value = ""; $("#historyTo").value = ""; historyState.dateFrom = ""; historyState.dateTo = ""; historyState.page = 1; await loadHistory(); });
-  $("#historyPrevious").addEventListener("click", async () => { if (historyState.page > 1) { historyState.page -= 1; await loadHistory(); } });
-  $("#historyNext").addEventListener("click", async () => { historyState.page += 1; await loadHistory(); });
-  let lastWidth = window.innerWidth; // pasek adresu na mobile zmienia tylko wysokość, a to nie wymaga przerysowania
-  window.addEventListener("resize", () => { if (window.innerWidth === lastWidth) return; lastWidth = window.innerWidth; clearTimeout(window.chartTimer); window.chartTimer = setTimeout(loadDashboard, 150); });
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => loadDashboard());
-}
-
-wireEvents();
-Promise.all([loadConfig(), loadBackupSummary(), loadHistory(), loadDashboard(true)]).catch((error) => toast(error.message, true));
+load(true);
