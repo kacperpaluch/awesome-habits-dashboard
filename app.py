@@ -564,6 +564,11 @@ def period_key(day: date, period: str) -> date:
     return day - timedelta(days=day.weekday()) if period.lower() == "weekly" else day
 
 
+def is_running(row: dict | sqlite3.Row, today: date) -> bool:
+    """Return whether the record belongs to the still-open day or week."""
+    return row["date"] == period_key(today, row["period"]).isoformat()
+
+
 def record_state(row: dict | sqlite3.Row, today: date) -> str:
     """Return a final or provisional state for a daily/weekly record."""
     if is_complete(row):
@@ -703,14 +708,17 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
         done = sum(is_complete(r) for r in items)
         in_progress = sum(record_state(r, today) == "in_progress" for r in items)
         missed = sum(record_state(r, today) == "missed" for r in items)
-        quantities = [r["quantity"] for r in items]
+        # A running period is still accumulating, even if its goal is already
+        # complete, so keep it in `latest` but out of value aggregates.
+        quantities = [r["quantity"] for r in items if not is_running(r, today)]
         habits.append({
             "name": name, "period": period, "type": items[-1]["habit_type"],
             "unit": items[-1]["unit"], "goal": items[-1]["goal"], "list": items[-1]["list_name"],
             "done": done, "missed": missed, "in_progress": in_progress,
             "rate": rate_of(items, today),
             "current_streak": current, "longest_streak": longest, "streak_unit": unit,
-            "average": round(statistics.fmean(quantities), 2), "latest": quantities[-1],
+            "average": round(statistics.fmean(quantities), 2) if quantities else 0,
+            "latest": items[-1]["quantity"],
         })
     habits.sort(key=lambda h: (h["rate"] is None, -(h["rate"] or 0), h["name"].lower()))
     done = sum(is_complete(r) for r in rows)
@@ -863,7 +871,7 @@ def habit_detail(name: str, params: dict[str, list[str]], today: date | None = N
     if not history:
         return None
     current, longest, unit = streaks(history, today)
-    values = [r["quantity"] for r in rows]
+    values = [r["quantity"] for r in rows if not is_running(r, today)]
     in_progress = sum(record_state(r, today) == "in_progress" for r in rows)
     return {"name": name, "period": period, "type": history[-1]["habit_type"],
             "goal": history[-1]["goal"], "unit": history[-1]["unit"], "list": history[-1]["list_name"],

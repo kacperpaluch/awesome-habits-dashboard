@@ -11,7 +11,7 @@ Self-hostowany dashboard analityczny dla eksportów CSV z aplikacji Awesome Habi
 - atomowa podmiana danych — błędny plik nie niszczy poprzedniego snapshotu,
 - nawyki dzienne i tygodniowe, Building i Breaking,
 - trzy stany okresu: wykonane, niewykonane i „w trakcie” dla bieżącego dnia/tygodnia,
-- skuteczność bez zaniżania wyniku przez trwające okresy, streaki, idealne dni, trend 7/30 oraz heatmapa,
+- skuteczność i statystyki wartości bez zniekształcania przez trwające okresy, streaki, idealne dni, trend 7/30 oraz heatmapa,
 - automatyczny backup o wybranej godzinie, backup na żądanie i bezpieczne przywracanie,
 - historia importów, webhooków i backupów z filtrem dat oraz paginacją,
 - filtrowanie według nawyku, listy, okresu i zakresu dat,

@@ -93,6 +93,22 @@ class AwesomeHabitsTests(unittest.TestCase):
         self.assertEqual(result["summary"]["missed"], 0)
         self.assertIsNone(result["summary"]["rate"])
 
+    def test_averages_ignore_the_running_period(self):
+        # The current day has already reached its goal, but its quantity can
+        # still grow and must not affect average/minimum until the day closes.
+        completed_today = CSV.replace(
+            b"2026-08-11,Fiber,,No,Daily,Building,25,10,g,Incomplete",
+            b"2026-08-11,Fiber,,No,Daily,Building,25,30,g,Complete",
+        )
+        app.import_csv(completed_today, "test")
+        detail = app.habit_detail("Fiber", {}, today=date(2026, 8, 11))
+        self.assertEqual(detail["records"][-1]["state"], "complete")
+        self.assertEqual((detail["average"], detail["minimum"], detail["maximum"]),
+                         (30.0, 30.0, 30.0))
+        habit = next(h for h in app.dashboard({}, today=date(2026, 8, 11))["habits"]
+                     if h["name"] == "Fiber")
+        self.assertEqual((habit["average"], habit["latest"]), (30.0, 30.0))
+
     def test_backup_is_valid_and_restore_creates_safety_copy(self):
         first = app.import_csv(CSV, "test")
         self.assertTrue(first["backup"])
