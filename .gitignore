@@ -15,3 +15,5 @@ AwesomeHabits.csv
 .DS_Store
 *.log
 *.tmp
+venv/
+.venv/

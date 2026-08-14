@@ -3,10 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f3f1ec">
+  <meta name="theme-color" content="#f3f1ec" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#161814" media="(prefers-color-scheme: dark)">
   <title>Awesome Habits Lens</title>
   <meta name="description" content="Prywatny dashboard statystyk z eksportów Awesome Habits.">
-  <link rel="stylesheet" href="/styles.css?v=3">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icon-192.png">
+  <link rel="apple-touch-icon" href="/icon-180.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Habits Lens">
+  <link rel="stylesheet" href="/styles.css?v=4">
 </head>
 <body>
   <div class="shell">
@@ -105,6 +111,6 @@
   </dialog>
   <dialog id="detailDialog" class="dialog detail-dialog"><button class="dialog-close" data-close="detailDialog" aria-label="Zamknij">×</button><div id="detailContent"></div></dialog>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js?v=4"></script>
+  <script src="/app.js?v=5"></script>
 </body>
 </html>

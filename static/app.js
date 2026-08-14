@@ -17,6 +17,14 @@ function toast(message, error = false) {
   const box = $("#toast"); box.textContent = message; box.className = `toast show${error ? " error" : ""}`;
   clearTimeout(toast.timer); toast.timer = setTimeout(() => box.className = "toast", 3800);
 }
+async function copyText(value) {
+  try { await navigator.clipboard.writeText(value); return true; } catch { /* brak schowka poza secure context, np. http://192.168.x.x */ }
+  const field = document.createElement("textarea");
+  field.value = value; field.style.cssText = "position:fixed;top:0;opacity:0";
+  document.body.append(field); field.select();
+  const copied = document.execCommand("copy"); field.remove();
+  return copied;
+}
 async function api(path, options) {
   const response = await fetch(path, options);
   const body = await response.json().catch(() => ({}));
@@ -176,7 +184,7 @@ function progressText(item) {
 
 function renderHabits(habits) {
   $("#emptyState").classList.toggle("hidden", habits.length > 0);
-  $("#habitRows").innerHTML = habits.map((habit) => { const hasRate = habit.rate != null; return `<tr><td><div class="habit-name"><span class="habit-dot">${escapeHtml(habit.name[0])}</span><span><strong>${escapeHtml(habit.name)}</strong><small>${escapeHtml(habit.list || habit.type)} · ${escapeHtml(habit.period)}</small></span></div></td><td class="rate-cell"><div class="rate-top"><strong>${hasRate ? `${fmt.format(habit.rate)}%` : "—"}</strong><span>${hasRate ? (habit.rate >= 80 ? "dobry rytm" : "do poprawy") : "brak zamkniętych"}</span></div><div class="progress"><i style="width:${hasRate ? habit.rate : 0}%"></i></div></td><td>${habit.done}</td><td>${habit.missed}</td><td class="pending-count">${habit.in_progress || "—"}</td><td>${habit.current_streak} ${habit.streak_unit === "week" ? "tyg." : "dni"}</td><td>${fmt.format(habit.average)} ${escapeHtml(habit.unit)}</td><td><button class="row-open" data-habit="${escapeHtml(habit.name)}" data-period="${escapeHtml(habit.period)}" aria-label="Szczegóły">›</button></td></tr>`; }).join("");
+  $("#habitRows").innerHTML = habits.map((habit) => { const hasRate = habit.rate != null; return `<tr><td class="habit-cell"><div class="habit-name"><span class="habit-dot">${escapeHtml(habit.name[0])}</span><span><strong>${escapeHtml(habit.name)}</strong><small>${escapeHtml(habit.list || habit.type)} · ${escapeHtml(habit.period)}</small></span></div></td><td class="rate-cell"><div class="rate-top"><strong>${hasRate ? `${fmt.format(habit.rate)}%` : "—"}</strong><span>${hasRate ? (habit.rate >= 80 ? "dobry rytm" : "do poprawy") : "brak zamkniętych"}</span></div><div class="progress"><i style="width:${hasRate ? habit.rate : 0}%"></i></div></td><td data-label="Wykonane">${habit.done}</td><td data-label="Niewykonane">${habit.missed}</td><td class="pending-count" data-label="W trakcie">${habit.in_progress || "—"}</td><td data-label="Streak">${habit.current_streak} ${habit.streak_unit === "week" ? "tyg." : "dni"}</td><td data-label="Średnia">${fmt.format(habit.average)} ${escapeHtml(habit.unit)}</td><td><button class="row-open" data-habit="${escapeHtml(habit.name)}" data-period="${escapeHtml(habit.period)}" aria-label="Szczegóły">›</button></td></tr>`; }).join("");
   $$(".row-open").forEach((button) => button.addEventListener("click", () => showDetail(button.dataset.habit, button.dataset.period)));
 }
 
@@ -196,16 +204,30 @@ function renderHeatmap(values) {
   for (let week = 0; week < weeks; week++) { const day = new Date(gridStart); day.setDate(day.getDate() + week * 7); const label = document.createElement("span"); label.style.width = "17px"; if (day.getMonth() !== lastMonth) { label.textContent = months[day.getMonth()]; lastMonth = day.getMonth(); } labels.append(label); }
   labels.style.width = `${weeks * 17 + 30}px`; $("#heatmapCaption").textContent = `${values.length} dni z danymi · udział wykonanych nawyków dziennych`;
 }
+// dotyk nie pokazuje title, więc opis komórki trafia do toastu
+$("#heatmap").addEventListener("click", (event) => { const cell = event.target.closest(".heat-cell"); if (cell) toast(cell.title); });
 
 function renderTrend(points) {
   const canvas = $("#trendChart"), ratio = window.devicePixelRatio || 1, width = canvas.clientWidth, height = canvas.clientHeight;
   canvas.width = width * ratio; canvas.height = height * ratio; const ctx = canvas.getContext("2d"); ctx.scale(ratio, ratio); ctx.clearRect(0, 0, width, height);
+  const theme = getComputedStyle(document.documentElement), token = (name) => theme.getPropertyValue(name).trim();
   const pad = { left: 34, right: 12, top: 12, bottom: 25 }, w = width - pad.left - pad.right, h = height - pad.top - pad.bottom;
-  ctx.font = "10px sans-serif"; ctx.fillStyle = "#73776f"; ctx.strokeStyle = "#dcddd7"; ctx.lineWidth = 1;
+  ctx.font = "10px sans-serif"; ctx.fillStyle = token("--muted"); ctx.strokeStyle = token("--line"); ctx.lineWidth = 1;
   [0, 25, 50, 75, 100].forEach((value) => { const y = pad.top + h - value / 100 * h; ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(width - pad.right, y); ctx.stroke(); ctx.fillText(`${value}%`, 0, y + 3); });
   if (points.length < 2) return;
-  const draw = (key, color, lineWidth) => { ctx.beginPath(); points.forEach((point, i) => { const x = pad.left + i / (points.length - 1) * w, y = pad.top + h - point[key] / 100 * h; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.strokeStyle = color; ctx.lineWidth = lineWidth; ctx.stroke(); };
-  draw("rate", "rgba(115,119,111,.35)", 1); draw("avg30", "#d78b58", 2); draw("avg7", "#355f4b", 2.5);
+  const narrow = width < 520; // na telefonie surowy wynik dnia to sama gęstwina, zostają średnie
+  const step = Math.max(1, Math.ceil(points.length / (w * 1.5))); // najwyżej ~1,5 punktu na piksel
+  const data = step > 1 ? points.filter((_, index) => index % step === 0) : points;
+  const draw = (key, color, lineWidth) => { ctx.beginPath(); data.forEach((point, i) => { const x = pad.left + i / (data.length - 1) * w, y = pad.top + h - point[key] / 100 * h; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.strokeStyle = color; ctx.lineWidth = lineWidth; ctx.stroke(); };
+  if (!narrow) draw("rate", token("--muted") + "59", 1);
+  draw("avg30", token("--orange"), 2); draw("avg7", token("--green"), 2.5);
+  const ticks = narrow ? 3 : 5;
+  for (let i = 0; i < ticks; i++) {
+    const index = Math.round(i / (ticks - 1) * (data.length - 1)), day = parseDate(data[index].date);
+    ctx.textAlign = i === 0 ? "left" : i === ticks - 1 ? "right" : "center";
+    ctx.fillText(`${months[day.getMonth()]} ${String(day.getFullYear()).slice(2)}`, pad.left + index / (data.length - 1) * w, height - 6);
+  }
+  ctx.textAlign = "left";
 }
 function renderWeekdays(items) { $("#weekdayBars").innerHTML = items.map((item) => `<div class="bar-row"><span>${weekdays[item.day]}</span><div class="bar-track"><i style="width:${item.rate || 0}%"></i></div><strong>${item.rate == null ? "—" : `${fmt.format(item.rate)}%`}</strong></div>`).join(""); }
 function renderMonthly(items) { $("#monthlyGrid").innerHTML = items.map((item) => `<div class="month-card"><span>${escapeHtml(item.month)}</span><strong>${item.rate == null ? "—" : `${fmt.format(item.rate)}%`}</strong><small>${item.perfect_days} idealnych dni · ${item.records} wpisów</small></div>`).join("") || `<p class="empty">Brak danych miesięcznych.</p>`; }
@@ -225,7 +247,7 @@ function wireEvents() {
   $("#fileInput").addEventListener("change", (event) => importFile(event.target.files[0]));
   const drop = $(".drop-zone"); ["dragenter", "dragover"].forEach((name) => drop.addEventListener(name, (e) => { e.preventDefault(); drop.classList.add("drag"); })); ["dragleave", "drop"].forEach((name) => drop.addEventListener(name, (e) => { e.preventDefault(); drop.classList.remove("drag"); })); drop.addEventListener("drop", (e) => importFile(e.dataTransfer.files[0]));
   $("#settingsButton").addEventListener("click", () => { $("#settingsDialog").showModal(); Promise.all([loadBackupSummary(), loadHistory()]).catch((error) => toast(error.message, true)); }); $$('[data-close]').forEach((button) => button.addEventListener("click", () => $(`#${button.dataset.close}`).close()));
-  $("#copyWebhook").addEventListener("click", async () => { await navigator.clipboard.writeText($("#webhookUrl").textContent); toast("Adres webhooka skopiowany."); });
+  $("#copyWebhook").addEventListener("click", async () => { const copied = await copyText($("#webhookUrl").textContent); toast(copied ? "Adres webhooka skopiowany." : "Nie udało się skopiować. Zaznacz adres i skopiuj ręcznie.", !copied); });
   $$("[data-range]").forEach((button) => button.addEventListener("click", () => setRange(button.dataset.range)));
   $("#applyRange").addEventListener("click", () => { state.start = $("#startDate").value; state.end = $("#endDate").value; if (state.start && state.end && state.start <= state.end) loadDashboard(); else toast("Wybierz poprawny zakres dat.", true); });
   [["#habitFilter", "habit"], ["#listFilter", "list"], ["#periodFilter", "period"]].forEach(([selector, key]) => $(selector).addEventListener("change", (e) => { state[key] = e.target.value; loadDashboard(); }));
@@ -238,7 +260,9 @@ function wireEvents() {
   $("#historyClear").addEventListener("click", async () => { $("#historyFrom").value = ""; $("#historyTo").value = ""; historyState.dateFrom = ""; historyState.dateTo = ""; historyState.page = 1; await loadHistory(); });
   $("#historyPrevious").addEventListener("click", async () => { if (historyState.page > 1) { historyState.page -= 1; await loadHistory(); } });
   $("#historyNext").addEventListener("click", async () => { historyState.page += 1; await loadHistory(); });
-  window.addEventListener("resize", () => { clearTimeout(window.chartTimer); window.chartTimer = setTimeout(loadDashboard, 150); });
+  let lastWidth = window.innerWidth; // pasek adresu na mobile zmienia tylko wysokość, a to nie wymaga przerysowania
+  window.addEventListener("resize", () => { if (window.innerWidth === lastWidth) return; lastWidth = window.innerWidth; clearTimeout(window.chartTimer); window.chartTimer = setTimeout(loadDashboard, 150); });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => loadDashboard());
 }
 
 wireEvents();
