@@ -12,7 +12,7 @@
   <link rel="apple-touch-icon" href="/icon-180.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Habits Lens">
-  <link rel="stylesheet" href="/styles.css?v=4">
+  <link rel="stylesheet" href="/styles.css?v=5">
 </head>
 <body>
   <div class="shell">
@@ -77,11 +77,22 @@
         </section>
 
         <details class="archive"><summary>Analiza historyczna</summary>
+          <section class="insight-strip" aria-label="Najważniejsze obserwacje">
+            <article><span>Zmiana vs poprzedni okres</span><strong id="comparisonValue">—</strong><small id="comparisonMeta">Brak okresu porównawczego</small></article>
+            <article><span>Zmiana rytmu</span><strong id="momentumValue">—</strong><small>ostatnie 14 vs poprzednie 14 dni</small></article>
+            <article><span>Najlepszy dzień</span><strong id="bestWeekday">—</strong><small id="worstWeekday">—</small></article>
+            <article><span>Regularność</span><strong id="regularityValue">—</strong><small>zmienność wyników tygodniowych</small></article>
+          </section>
           <section class="analytics-grid">
             <article class="panel compact-panel"><div class="panel-heading compact"><div><p class="eyebrow">TYDZIEŃ</p><h2>Według dnia</h2></div></div><div id="weekdayBars" class="bar-list"></div></article>
-            <article class="panel compact-panel"><div class="panel-heading compact"><div><p class="eyebrow">REGULARNOŚĆ</p><h2>Stabilność rytmu</h2></div></div><div id="regularity" class="regularity"></div></article>
+            <article class="panel compact-panel"><div class="panel-heading compact"><div><p class="eyebrow">OBSZARY</p><h2>Wyniki według list</h2></div></div><div id="listBars" class="bar-list"></div></article>
           </section>
           <section class="panel"><div class="panel-heading compact"><div><p class="eyebrow">PERSPEKTYWA</p><h2>Miesiące w pigułce</h2></div></div><div id="monthlyGrid" class="monthly-grid"></div></section>
+          <section class="analytics-grid">
+            <article class="panel compact-panel"><div class="panel-heading compact"><div><p class="eyebrow">NAWYKI</p><h2>Przerwy i powroty</h2></div></div><div id="habitInsights" class="insight-list"></div></article>
+            <article class="panel compact-panel"><div class="panel-heading compact"><div><p class="eyebrow">REGULARNOŚĆ</p><h2>Stabilność rytmu</h2></div></div><div id="regularity" class="regularity"></div></article>
+          </section>
+          <section class="panel"><div class="panel-heading compact"><div><p class="eyebrow">WARTOŚCI</p><h2>Cele i rekordy osobiste</h2></div><span class="panel-note">tylko nawyki z celem ilościowym</span></div><div id="recordsGrid" class="records-grid"></div></section>
         </details>
       </div>
     </main>
@@ -111,6 +122,6 @@
   </dialog>
   <dialog id="detailDialog" class="dialog detail-dialog"><button class="dialog-close" data-close="detailDialog" aria-label="Zamknij">×</button><div id="detailContent"></div></dialog>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js?v=5"></script>
+  <script src="/app.js?v=6"></script>
 </body>
 </html>

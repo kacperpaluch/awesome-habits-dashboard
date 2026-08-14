@@ -625,6 +625,68 @@ def streak_rows(all_rows: list[dict], name: str, period: str) -> list[dict]:
     return [r for r in all_rows if r["name"] == name and r["period"] == period]
 
 
+def habit_behavior(rows: list[dict]) -> dict:
+    """Jak długo trwają przerwy i jak szybko wracasz po wpadce."""
+    longest_break = current_break = waiting = 0
+    recoveries = []
+    for row in sorted(rows, key=lambda r: r["date"]):
+        if is_complete(row):
+            if waiting:
+                recoveries.append(waiting)
+                waiting = 0
+            current_break = 0
+        else:
+            waiting += 1
+            current_break += 1
+            longest_break = max(longest_break, current_break)
+    return {
+        "longest_break": longest_break,
+        "median_recovery": round(statistics.median(recoveries), 1) if recoveries else None,
+        "recoveries": len(recoveries),
+    }
+
+
+def goal_metrics(rows: list[dict]) -> dict:
+    """Zapas względem celu i rekord osobisty; dla Breaking mniej znaczy lepiej."""
+    if not rows:
+        return {"average_margin": None, "average_ratio": None, "personal_best": None,
+                "zero_goal_successes": None, "zero_goal_violations": None}
+    latest = rows[-1]
+    goal = latest["goal"]
+    breaking = latest["habit_type"].lower() == "breaking"
+    margins = [(r["goal"] - r["quantity"]) if breaking else (r["quantity"] - r["goal"]) for r in rows]
+    ratios = []
+    for row in rows:
+        if row["goal"] <= 0:
+            continue
+        if breaking:
+            # Zero logów bije limit bezwarunkowo; bez sufitu dzielenie przez ~0
+            # wywalało średnią w miliony procent.
+            ratios.append(min(row["goal"] / row["quantity"] * 100, 999) if row["quantity"] > 0 else 999)
+        else:
+            ratios.append(row["quantity"] / row["goal"] * 100)
+    best = min(rows, key=lambda r: r["quantity"]) if breaking else max(rows, key=lambda r: r["quantity"])
+    return {
+        "average_margin": round(sum(margins) / len(margins), 2),
+        "average_ratio": round(sum(ratios) / len(ratios), 1) if ratios else None,
+        "personal_best": {"value": best["quantity"], "date": best["date"], "unit": best["unit"]},
+        "zero_goal_successes": sum(r["quantity"] == 0 for r in rows) if goal == 0 else None,
+        "zero_goal_violations": sum(r["quantity"] != 0 for r in rows) if goal == 0 else None,
+    }
+
+
+def previous_period_rows(params: dict[str, list[str]]) -> list[dict]:
+    """Rekordy z okresu tuż przed wybranym, tej samej długości — baza do porównania."""
+    if not (params.get("start") and params.get("end")):
+        return []
+    start, end = date.fromisoformat(params["start"][0]), date.fromisoformat(params["end"][0])
+    span = (end - start).days + 1
+    shifted = dict(params)
+    shifted["start"] = [(start - timedelta(days=span)).isoformat()]
+    shifted["end"] = [(start - timedelta(days=1)).isoformat()]
+    return query_records(shifted)
+
+
 def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
     today = today or date.today()
     rows = query_records(params)
@@ -715,6 +777,52 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
     current_week = period_key(today, "Weekly").isoformat()
     week_rates = [rate_of(items, today) for key, items in week_groups.items() if key != current_week]
     week_rates = [value for value in week_rates if value is not None]
+
+    previous_rows = previous_period_rows(params)
+    current_rate, previous_rate = rate_of(rows, today), rate_of(previous_rows, today)
+    comparison = {"current_rate": current_rate, "previous_rate": previous_rate,
+                  "delta": round(current_rate - previous_rate, 1) if current_rate is not None and previous_rate is not None else None,
+                  "current_records": len(rows), "previous_records": len(previous_rows)}
+    series = [item["rate"] for item in trend]
+    momentum = None
+    if len(series) >= 28:
+        momentum = round(statistics.fmean(series[-14:]) - statistics.fmean(series[-28:-14]), 1)
+    rated_weekdays = [item for item in weekday_stats if item["records"] and item["rate"] is not None]
+    best_weekday = max(rated_weekdays, key=lambda x: x["rate"]) if rated_weekdays else None
+    worst_weekday = min(rated_weekdays, key=lambda x: x["rate"]) if rated_weekdays else None
+
+    current_by_name, previous_by_name = defaultdict(list), defaultdict(list)
+    for row in rows:
+        current_by_name[row["name"]].append(row)
+    for row in previous_rows:
+        previous_by_name[row["name"]].append(row)
+    changes = []
+    for name in sorted(set(current_by_name) & set(previous_by_name)):
+        cr, pr = rate_of(current_by_name[name], today), rate_of(previous_by_name[name], today)
+        if cr is None or pr is None:
+            continue
+        changes.append({"name": name, "current_rate": cr, "previous_rate": pr, "delta": round(cr - pr, 1),
+                        "reliable": min(len(current_by_name[name]), len(previous_by_name[name])) >= 5})
+    most_improved = max(changes, key=lambda x: x["delta"]) if changes else None
+    most_regressed = min(changes, key=lambda x: x["delta"]) if changes else None
+
+    list_groups = defaultdict(list)
+    for row in rows:
+        list_groups[row["list_name"] or "Bez listy"].append(row)
+    lists = [{"name": name, "rate": rate_of(items, today), "done": sum(is_complete(r) for r in items),
+              "in_progress": sum(record_state(r, today) == "in_progress" for r in items),
+              "total": len(items)} for name, items in sorted(list_groups.items())]
+
+    behaviors, records_data = [], []
+    for (name, period), items in grouped.items():
+        resolved_items = [item for item in items if record_state(item, today) != "in_progress"]
+        if not resolved_items:
+            continue
+        behaviors.append({"name": name, "period": period, **habit_behavior(resolved_items)})
+        records_data.append({"name": name, "period": period, "type": resolved_items[-1]["habit_type"],
+                             "goal": resolved_items[-1]["goal"], **goal_metrics(resolved_items)})
+    behaviors.sort(key=lambda x: (-x["longest_break"], x["name"].lower()))
+    records_data.sort(key=lambda x: x["name"].lower())
     return {
         "summary": {"done": done, "missed": missed, "in_progress": in_progress,
                     "records": total, "resolved": done + missed,
@@ -731,6 +839,10 @@ def dashboard(params: dict[str, list[str]], today: date | None = None) -> dict:
         "analytics": {"trends": {"daily": trend}, "weekdays": weekday_stats, "monthly": monthly,
                       "regularity": {"weekly_stddev": round(statistics.pstdev(week_rates), 1) if len(week_rates) > 1 else None,
                                      "weeks": len(week_rates)},
+                      "comparison": comparison, "momentum": momentum,
+                      "best_weekday": best_weekday, "worst_weekday": worst_weekday,
+                      "lists": lists, "behaviors": behaviors, "records": records_data,
+                      "most_improved": most_improved, "most_regressed": most_regressed,
                       "today": {"date": today.isoformat(), "done": today_done, "total": len(current_period),
                                 "pending": sorted(pending, key=lambda x: x["name"].lower())},
                       "latest_import": dict(latest) if latest else None},

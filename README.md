@@ -16,6 +16,7 @@ Self-hostowany dashboard analityczny dla eksportów CSV z aplikacji Awesome Habi
 - historia importów, webhooków i backupów z filtrem dat oraz paginacją,
 - filtrowanie według nawyku, listy, okresu i zakresu dat,
 - szczegóły każdego nawyku w osobnym oknie,
+- analiza historyczna: porównanie z poprzednim okresem, zmiana rytmu, wyniki według list, przerwy i powroty oraz rekordy osobiste,
 - interfejs dopasowany do telefonu: karty zamiast tabeli, tryb ciemny według ustawień systemu, instalacja jako aplikacja (PWA),
 - lokalna baza SQLite w trwałym wolumenie,
 - brak zależności runtime poza biblioteką standardową Pythona.

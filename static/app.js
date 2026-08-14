@@ -166,6 +166,67 @@ function render(data) {
   $("#habitFilter").value = state.habit; $("#listFilter").value = state.list; $("#periodFilter").value = state.period;
   renderToday(data.analytics.today); renderHeatmap(data.heatmap); renderTrend(data.analytics.trends.daily);
   renderHabits(data.habits); renderWeekdays(data.analytics.weekdays); renderMonthly(data.analytics.monthly); renderRegularity(data.analytics.regularity);
+  renderInsightStrip(data.analytics); renderLists(data.analytics.lists); renderBehaviors(data.analytics); renderRecords(data.analytics.records);
+}
+
+function signed(value, suffix = " pp") {
+  if (value == null) return "—";
+  return `${value > 0 ? "+" : ""}${fmt.format(value)}${suffix}`;
+}
+function toneClass(value) { return value > 0 ? "positive" : value < 0 ? "negative" : ""; }
+function plural(value, one, few, many) {
+  const count = Math.round(value);
+  if (count === 1) return one;
+  return [2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100) ? few : many;
+}
+
+function renderInsightStrip(analytics) {
+  const comparison = analytics.comparison;
+  $("#comparisonValue").textContent = signed(comparison.delta);
+  $("#comparisonValue").className = toneClass(comparison.delta);
+  $("#comparisonMeta").textContent = comparison.previous_rate == null
+    ? "Brak danych w poprzednim okresie"
+    : `${fmt.format(comparison.previous_rate)}% poprzednio · ${comparison.previous_records} rekordów`;
+  $("#momentumValue").textContent = signed(analytics.momentum);
+  $("#momentumValue").className = toneClass(analytics.momentum);
+  $("#bestWeekday").textContent = analytics.best_weekday ? `${weekdays[analytics.best_weekday.day]} · ${fmt.format(analytics.best_weekday.rate)}%` : "—";
+  $("#worstWeekday").textContent = analytics.worst_weekday ? `Najsłabiej: ${weekdays[analytics.worst_weekday.day]} · ${fmt.format(analytics.worst_weekday.rate)}%` : "Za mało danych";
+  const sd = analytics.regularity.weekly_stddev;
+  $("#regularityValue").textContent = sd == null ? "Za mało danych" : sd <= 5 ? "Bardzo stabilnie" : sd <= 15 ? "Stabilnie" : "Nierówny rytm";
+  $("#regularityValue").title = sd == null ? "Potrzebne co najmniej dwa tygodnie" : `Odchylenie tygodniowe: ${sd} pp`;
+}
+
+function renderBars(selector, items) {
+  $(selector).innerHTML = items.length
+    ? items.map((item) => `<div class="bar-row"><span>${escapeHtml(item.name)}</span><div class="bar-track"><i style="width:${item.rate || 0}%"></i></div><strong>${item.rate == null ? "—" : `${fmt.format(item.rate)}%`}</strong></div>`).join("")
+    : "<p class='empty'>Brak danych.</p>";
+}
+function renderLists(lists) {
+  renderBars("#listBars", lists.map((item) => ({ name: item.name, rate: item.rate })));
+}
+
+function renderBehaviors(analytics) {
+  const items = [];
+  if (analytics.most_improved) items.push({ title: "Największa poprawa", name: analytics.most_improved.name, value: signed(analytics.most_improved.delta), reliable: analytics.most_improved.reliable });
+  if (analytics.most_regressed) items.push({ title: "Największy spadek", name: analytics.most_regressed.name, value: signed(analytics.most_regressed.delta), reliable: analytics.most_regressed.reliable });
+  const fastest = analytics.behaviors.filter((item) => item.median_recovery != null).sort((a, b) => a.median_recovery - b.median_recovery)[0];
+  if (fastest) items.push({ title: "Najszybszy powrót", name: fastest.name, value: `${fmt.format(fastest.median_recovery)} ${plural(fastest.median_recovery, "okres", "okresy", "okresów")}`, reliable: fastest.recoveries >= 3 });
+  const longest = analytics.behaviors[0]; // posortowane malejąco po długości przerwy
+  if (longest?.longest_break) items.push({ title: "Najdłuższa przerwa", name: longest.name, value: `${longest.longest_break} ${plural(longest.longest_break, "okres", "okresy", "okresów")}`, reliable: true });
+  $("#habitInsights").innerHTML = items.length
+    ? items.map((item) => `<div class="insight-item"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.name)}${item.reliable ? "" : " · mała próba"}</small></span><span class="insight-value ${toneClass(String(item.value).startsWith("+") ? 1 : String(item.value).startsWith("-") ? -1 : 0)}">${escapeHtml(item.value)}</span></div>`).join("")
+    : "<p class='empty'>Potrzeba danych z dwóch kolejnych okresów.</p>";
+}
+
+function renderRecords(items) {
+  const useful = items.filter((item) => item.personal_best && (item.personal_best.unit || item.average_ratio != null || item.zero_goal_successes != null));
+  $("#recordsGrid").innerHTML = useful.length ? useful.map((item) => {
+    const record = item.personal_best;
+    const detail = item.average_ratio != null
+      ? `Średnio ${fmt.format(item.average_ratio)}% celu · margines ${signed(item.average_margin, ` ${record.unit || ""}`)}`
+      : `${item.zero_goal_successes} okresów bez naruszenia · ${item.zero_goal_violations} naruszeń`;
+    return `<article class="record-card"><span>${escapeHtml(item.name)}</span><strong>${fmt.format(record.value)} ${escapeHtml(record.unit)}</strong><small>Rekord: ${escapeHtml(record.date)}<br>${escapeHtml(detail)}</small></article>`;
+  }).join("") : "<p class='empty'>Brak wartości ilościowych w wybranym okresie.</p>";
 }
 
 function renderToday(today) {
